@@ -29,6 +29,16 @@ NULL
 #' @param lambda_grid Grid for Box-Cox search (only used if lambda is NULL)
 #' @param min_positive Minimum value to replace zeros in amount model.
 #'   Default NULL uses half the minimum positive value (NCI convention).
+#' @param prob_engine Engine for the logistic GLMM probability sub-model in
+#'   two-part models. `"glmmPQL"` (default) uses `MASS::glmmPQL()` —
+#'   fast but uses penalized quasi-likelihood (PQL), which can attenuate
+#'   variance components. `"glmer"` uses `lme4::glmer()` with Laplace
+#'   approximation for full ML, giving closer parity with SAS PROC NLMIXED.
+#'   Requires the **lme4** package.
+#' @param start Optional `mixtran_fit` object from a previous call. When
+#'   supplied, its fixed-effect estimates are used as starting values for the
+#'   optimiser, which can improve convergence speed and stability (useful in
+#'   BRR replicates or when re-fitting after a lambda update).
 #' @param verbose Print model fitting progress
 #' @return A `mixtran_fit` object containing parameter estimates, predicted
 #'   values, and diagnostics needed for the DISTRIB step.
@@ -44,7 +54,14 @@ mixtran <- function(data,
                     lambda = NULL,
                     lambda_grid = seq(0.01, 1.0, by = 0.01),
                     min_positive = NULL,
+                    prob_engine = c("glmmPQL", "glmer"),
+                    start = NULL,
                     verbose = TRUE) {
+
+  prob_engine <- match.arg(prob_engine)
+  if (!is.null(start) && !inherits(start, "mixtran_fit")) {
+    stop("'start' must be a mixtran_fit object or NULL.")
+  }
 
   model_type <- match.arg(model_type)
   data <- as.data.frame(data)
@@ -87,12 +104,15 @@ mixtran <- function(data,
 
   # --- Fit model ---
   if (model_type == "amount") {
-    result <- fit_amount_model(prep, lambda, verbose)
+    result <- fit_amount_model(prep, lambda, verbose, start = start)
   } else if (model_type == "uncorr") {
-    result <- fit_twopart_uncorr(prep, lambda, verbose)
+    result <- fit_twopart_uncorr(prep, lambda, verbose,
+                                  prob_engine = prob_engine, start = start)
   } else {
-    result <- fit_twopart_corr(prep, lambda, verbose)
+    result <- fit_twopart_corr(prep, lambda, verbose,
+                                prob_engine = prob_engine, start = start)
   }
+  result$prob_engine <- prob_engine
 
   result$lambda <- lambda
   result$model_type <- model_type
@@ -204,7 +224,7 @@ prepare_mixtran_data <- function(data, intake_var, subject_var, repeat_var,
 #'   where u_i ~ N(0, sigma2_b) and eps_ij ~ N(0, sigma2_w)
 #'
 #' @keywords internal
-fit_amount_model <- function(prep, lambda, verbose) {
+fit_amount_model <- function(prep, lambda, verbose, start = NULL) {
 
   work <- prep$data
   cov_names <- prep$cov_names
@@ -226,12 +246,26 @@ fit_amount_model <- function(prep, lambda, verbose) {
   # Random intercept for subject captures between-person variation
   if (verbose) message("Fitting amount-only model with nlme::lme()...")
 
+  # Starting values from a prior fit improve convergence in BRR replicates
+  lme_start <- NULL
+  if (!is.null(start) && !is.null(start$beta)) {
+    beta_names <- names(stats::model.matrix(fixed_formula, data = work[1, , drop = FALSE]))
+    shared <- intersect(names(start$beta), beta_names)
+    if (length(shared) > 0) {
+      sv <- rep(0, length(beta_names))
+      names(sv) <- beta_names
+      sv[shared] <- start$beta[shared]
+      lme_start <- list(fixed = sv)
+    }
+  }
+
   fit <- tryCatch({
     nlme::lme(
       fixed = fixed_formula,
       random = ~ 1 | subject,
       data = work,
       method = "REML",
+      start = lme_start,
       weights = if (any(work$weight != 1)) nlme::varFixed(~ 1/weight) else NULL,
       control = nlme::lmeControl(
         maxIter = 500,
@@ -301,50 +335,112 @@ fit_amount_model <- function(prep, lambda, verbose) {
 #' Assumes Cov(v1_i, v2_i) = 0
 #'
 #' @keywords internal
-fit_twopart_uncorr <- function(prep, lambda, verbose) {
+fit_twopart_uncorr <- function(prep, lambda, verbose,
+                                prob_engine = "glmmPQL", start = NULL) {
 
   work <- prep$data
   cov_names <- prep$cov_names
 
-  if (verbose) message("Fitting two-part uncorrelated model...")
+  if (verbose) {
+    eng_label <- if (prob_engine == "glmer") "lme4::glmer" else "MASS::glmmPQL"
+    message(sprintf("Fitting two-part uncorrelated model (prob engine: %s)...", eng_label))
+  }
 
   # --- Part 1: Probability model (logistic GLMM) ---
   if (verbose) message("  Part 1: Probability of consumption...")
 
   if (length(cov_names) > 0) {
-    prob_formula <- stats::as.formula(
+    prob_formula_fixed <- stats::as.formula(
       paste("consumed ~", paste(cov_names, collapse = " + "))
     )
   } else {
-    prob_formula <- stats::as.formula("consumed ~ 1")
+    prob_formula_fixed <- stats::as.formula("consumed ~ 1")
   }
 
-  # Use MASS::glmmPQL for logistic mixed model (faster than full ML for large data)
-  # Alternative: lme4::glmer, but PQL is more robust for starting values
-  prob_fit <- tryCatch({
-    MASS::glmmPQL(
-      fixed = prob_formula,
-      random = ~ 1 | subject,
-      family = stats::binomial(link = "logit"),
-      data = work,
-      verbose = FALSE
+  prob_fit <- NULL
+  alpha <- NULL
+  sigma2_v1 <- NA
+
+  if (prob_engine == "glmer") {
+    # --- lme4::glmer: full ML via Laplace approximation ---
+    if (!requireNamespace("lme4", quietly = TRUE)) {
+      stop("lme4 is required for prob_engine='glmer'. Install with: install.packages('lme4')")
+    }
+    glmer_formula <- stats::as.formula(
+      paste("consumed ~",
+            paste(if (length(cov_names) > 0) cov_names else "1", collapse = " + "),
+            "+ (1 | subject)")
     )
-  }, error = function(e) {
-    if (verbose) message("    glmmPQL failed: ", e$message)
-    NULL
-  })
+    prob_fit <- tryCatch({
+      lme4::glmer(
+        formula = glmer_formula,
+        family  = stats::binomial(link = "logit"),
+        data    = work,
+        control = lme4::glmerControl(
+          optimizer = "bobyqa",
+          optCtrl   = list(maxfun = 2e5)
+        )
+      )
+    }, warning = function(w) {
+      # glmer issues convergence warnings; catch and return the fit anyway
+      withCallingHandlers(
+        lme4::glmer(
+          formula = glmer_formula,
+          family  = stats::binomial(link = "logit"),
+          data    = work,
+          control = lme4::glmerControl(
+            optimizer = "bobyqa",
+            optCtrl   = list(maxfun = 2e5)
+          )
+        ),
+        warning = function(w) invokeRestart("muffleWarning")
+      )
+    }, error = function(e) {
+      if (verbose) message("    glmer failed: ", e$message,
+                           "\n    Falling back to glmmPQL...")
+      NULL
+    })
+
+    if (!is.null(prob_fit)) {
+      alpha <- lme4::fixef(prob_fit)
+      sigma2_v1 <- as.numeric(lme4::VarCorr(prob_fit)$subject[1, 1])
+      attr(prob_fit, ".engine") <- "glmer"
+      if (verbose) {
+        message(sprintf("    Between-person variance (prob, glmer): %.4f", sigma2_v1))
+      }
+    }
+    # Fall through to glmmPQL if glmer returned NULL
+    if (is.null(prob_fit)) prob_engine <- "glmmPQL"
+  }
+
+  if (prob_engine == "glmmPQL") {
+    # --- MASS::glmmPQL: penalized quasi-likelihood (faster, default) ---
+    prob_fit <- tryCatch({
+      MASS::glmmPQL(
+        fixed   = prob_formula_fixed,
+        random  = ~ 1 | subject,
+        family  = stats::binomial(link = "logit"),
+        data    = work,
+        verbose = FALSE
+      )
+    }, error = function(e) {
+      if (verbose) message("    glmmPQL failed: ", e$message)
+      NULL
+    })
+
+    if (!is.null(prob_fit)) {
+      attr(prob_fit, ".engine") <- "glmmPQL"
+      alpha <- nlme::fixef(prob_fit)
+      vc_prob <- nlme::VarCorr(prob_fit)
+      sigma2_v1 <- as.numeric(vc_prob[1, "Variance"])
+      if (verbose) {
+        message(sprintf("    Between-person variance (prob, PQL): %.4f", sigma2_v1))
+      }
+    }
+  }
 
   if (is.null(prob_fit)) {
     warning("Probability model failed to converge. Returning partial results.")
-    alpha <- NULL
-    sigma2_v1 <- NA
-  } else {
-    alpha <- nlme::fixef(prob_fit)
-    vc_prob <- nlme::VarCorr(prob_fit)
-    sigma2_v1 <- as.numeric(vc_prob[1, "Variance"])
-    if (verbose) {
-      message(sprintf("    Between-person variance (prob): %.4f", sigma2_v1))
-    }
   }
 
   # --- Part 2: Amount model (conditional on consumption) ---
@@ -361,21 +457,35 @@ fit_twopart_uncorr <- function(prep, lambda, verbose) {
     amt_formula <- stats::as.formula("t_intake ~ 1")
   }
 
+  # Starting values for amount fixed effects from prior fit
+  amt_start <- NULL
+  if (!is.null(start) && !is.null(start$beta)) {
+    beta_names <- names(stats::model.matrix(amt_formula, data = work_pos[1, , drop = FALSE]))
+    shared <- intersect(names(start$beta), beta_names)
+    if (length(shared) > 0) {
+      sv <- rep(0, length(beta_names))
+      names(sv) <- beta_names
+      sv[shared] <- start$beta[shared]
+      amt_start <- list(fixed = sv)
+    }
+  }
+
   amt_fit <- tryCatch({
     nlme::lme(
-      fixed = amt_formula,
-      random = ~ 1 | subject,
-      data = work_pos,
-      method = "REML",
+      fixed   = amt_formula,
+      random  = ~ 1 | subject,
+      data    = work_pos,
+      method  = "REML",
+      start   = amt_start,
       control = nlme::lmeControl(maxIter = 500, opt = "optim", returnObject = TRUE)
     )
   }, error = function(e) {
     if (verbose) message("    Amount model REML failed, trying ML...")
     nlme::lme(
-      fixed = amt_formula,
-      random = ~ 1 | subject,
-      data = work_pos,
-      method = "ML",
+      fixed   = amt_formula,
+      random  = ~ 1 | subject,
+      data    = work_pos,
+      method  = "ML",
       control = nlme::lmeControl(maxIter = 500, opt = "optim", returnObject = TRUE)
     )
   })
@@ -390,30 +500,58 @@ fit_twopart_uncorr <- function(prep, lambda, verbose) {
     message(sprintf("    Within-person variance  (amount): %.4f", sigma2_e))
   }
 
-  # Predicted values
+  # Predicted values (population-level, i.e. without subject random effects)
   pred_df <- work
   pred_df$prob_linpred <- if (!is.null(prob_fit)) {
-    stats::predict(prob_fit, level = 0, newdata = work)
+    prob_popn_predict(prob_fit, newdata = work)
   } else {
-    NA
+    NA_real_
   }
 
-  # For amount predictions, only available for consumed rows
-  pred_df$amt_linpred <- NA
+  pred_df$amt_linpred <- NA_real_
   pred_df$amt_linpred[pred_df$consumed == 1] <- stats::predict(amt_fit, level = 0)
 
   list(
-    prob_fit = prob_fit,
-    amt_fit = amt_fit,
-    alpha = alpha,
-    beta = beta,
+    prob_fit  = prob_fit,
+    amt_fit   = amt_fit,
+    alpha     = alpha,
+    beta      = beta,
     sigma2_v1 = sigma2_v1,
     sigma2_v2 = sigma2_v2,
-    sigma2_e = sigma2_e,
-    rho = 0,  # uncorrelated by definition
+    sigma2_e  = sigma2_e,
+    rho       = 0,  # uncorrelated by definition
     predicted = pred_df,
     converged = !is.null(prob_fit)
   )
+}
+
+
+# ---------------------------------------------------------------------------
+# Engine-agnostic helpers for probability sub-model
+# ---------------------------------------------------------------------------
+
+#' Population-level predictions from prob model (no random effects)
+#' Works for both glmmPQL (nlme) and glmer (lme4) fits.
+#' @keywords internal
+prob_popn_predict <- function(prob_fit, newdata) {
+  if (inherits(prob_fit, "glmerMod")) {
+    stats::predict(prob_fit, newdata = newdata, re.form = NA, type = "link")
+  } else {
+    stats::predict(prob_fit, level = 0, newdata = newdata)
+  }
+}
+
+#' Subject-level random effects from prob model
+#' Returns a named numeric vector (name = subject ID as character).
+#' @keywords internal
+prob_ranef <- function(prob_fit) {
+  if (inherits(prob_fit, "glmerMod")) {
+    re <- lme4::ranef(prob_fit)$subject  # data frame, 1 col per RE term
+    setNames(as.numeric(re[[1]]), rownames(re))
+  } else {
+    re <- nlme::ranef(prob_fit)[[1]]     # data frame, 1 col ("(Intercept)")
+    setNames(as.numeric(re[[1]]), rownames(re))
+  }
 }
 
 
@@ -434,13 +572,15 @@ fit_twopart_uncorr <- function(prep, lambda, verbose) {
 #' the package spec (PACKAGE_SPEC.md, section 4.3.1).
 #'
 #' @keywords internal
-fit_twopart_corr <- function(prep, lambda, verbose) {
+fit_twopart_corr <- function(prep, lambda, verbose,
+                              prob_engine = "glmmPQL", start = NULL) {
 
   if (verbose) message("Fitting two-part correlated model (profile likelihood over rho)...")
 
   # Step 1: Fit uncorrelated model to get all parameters
   if (verbose) message("  Step 1: Fitting uncorrelated model...")
-  uncorr <- fit_twopart_uncorr(prep, lambda, verbose = FALSE)
+  uncorr <- fit_twopart_uncorr(prep, lambda, verbose = FALSE,
+                                prob_engine = prob_engine, start = start)
 
   if (!uncorr$converged) {
     warning("Uncorrelated model failed. Cannot fit correlated model.")
@@ -463,15 +603,15 @@ fit_twopart_corr <- function(prep, lambda, verbose) {
 
   # Subject-level standardised residuals from each part
   # Probability part: subject-level random effects are v1_i ~ N(0, sigma2_v1)
-  # We approximate v1_i by the glmmPQL empirical Bayes estimate, then standardise
+  # We approximate v1_i by the empirical Bayes estimate, then standardise
   prob_re <- tryCatch(
-    as.numeric(nlme::ranef(uncorr$prob_fit)[[1]]),
+    as.numeric(prob_ranef(uncorr$prob_fit)),
     error = function(e) rep(0, prep$n_subjects)
   )
-  amt_re <- tryCatch(
-    as.numeric(nlme::ranef(uncorr$amt_fit)[[1]]),
-    error = function(e) rep(0, prep$n_subjects)
-  )
+  amt_re <- tryCatch({
+    re_df <- nlme::ranef(uncorr$amt_fit)[[1]]  # data frame: rows=subjects, col="(Intercept)"
+    as.numeric(re_df[[1]])
+  }, error = function(e) rep(0, prep$n_subjects))
 
   # Standardise to unit variance
   sd_v1 <- sqrt(uncorr$sigma2_v1)

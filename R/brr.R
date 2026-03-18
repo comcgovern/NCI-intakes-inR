@@ -319,3 +319,95 @@ generate_nhanes_brr_weights <- function(data,
 
   result
 }
+
+
+#' Combine NHANES dietary recall data across multiple survey cycles
+#'
+#' Prepares a multi-cycle NHANES dataset for use with [mixtran()] and
+#' [brr_usual_intake()]. The key operation is rescaling sampling weights:
+#' CDC recommends dividing each cycle's full-sample weight by the number of
+#' cycles being pooled so that estimates represent the pooled reference period
+#' (typically 2 years per cycle × N cycles).
+#'
+#' @details
+#' The function:
+#' 1. Divides `weight_var` in each cycle's data frame by `length(cycle_list)`.
+#' 2. Adds a `cycle` column (1-based index of the cycle in `cycle_list`).
+#' 3. Row-binds all cycles into a single long-format data frame.
+#'
+#' For BRR weight generation from the pooled dataset, pass the result to
+#' [generate_nhanes_brr_weights()]. NHANES multi-cycle analyses typically use
+#' ~72 replicate weights (two PSUs per stratum × ~36 strata); the survey
+#' package handles this automatically.
+#'
+#' @param cycle_list A named or unnamed list of data frames, one per NHANES
+#'   survey cycle (e.g., `list(nhanes0102, nhanes0304, nhanes0506)`).
+#' @param weight_var Name of the sampling weight column in each data frame.
+#'   Weights are divided by the number of cycles (CDC pooling convention).
+#' @param subject_var Name of the subject identifier column. Subjects are
+#'   assumed to be unique within each cycle. A unique cross-cycle ID is
+#'   constructed as `<cycle_index>_<subject>` and stored in a new column
+#'   named `subject_var` (overwriting the original), unless
+#'   `make_unique_ids = FALSE`.
+#' @param make_unique_ids Logical (default `TRUE`). Prepend the cycle index to
+#'   subject IDs to ensure uniqueness across cycles. Set `FALSE` only if IDs
+#'   are already globally unique (e.g., SEQN from different NHANES cycles
+#'   can overlap, so `TRUE` is strongly recommended).
+#' @param cycle_names Optional character vector of cycle labels (same length as
+#'   `cycle_list`). Used as the `cycle` column values. Defaults to
+#'   `c("cycle1", "cycle2", ...)`.
+#' @return A single data frame with all cycles pooled, plus a `cycle` column
+#'   identifying the source cycle.
+#' @references
+#' Centers for Disease Control and Prevention (CDC). NHANES tutorials —
+#' Module 3: Weighting. Available at
+#' <https://www.cdc.gov/nchs/tutorials/nhanes/SurveyDesign/Weighting/Overview.htm>
+#' @export
+combine_nhanes_cycles <- function(cycle_list,
+                                   weight_var,
+                                   subject_var,
+                                   make_unique_ids = TRUE,
+                                   cycle_names = NULL) {
+
+  if (!is.list(cycle_list) || length(cycle_list) == 0) {
+    stop("'cycle_list' must be a non-empty list of data frames.")
+  }
+  n_cycles <- length(cycle_list)
+
+  if (is.null(cycle_names)) {
+    cycle_names <- paste0("cycle", seq_len(n_cycles))
+  } else if (length(cycle_names) != n_cycles) {
+    stop("'cycle_names' must have the same length as 'cycle_list'.")
+  }
+
+  result_list <- vector("list", n_cycles)
+
+  for (i in seq_len(n_cycles)) {
+    df <- as.data.frame(cycle_list[[i]])
+
+    # Validate required columns
+    for (v in c(weight_var, subject_var)) {
+      if (!(v %in% names(df))) {
+        stop(sprintf("Variable '%s' not found in cycle_list[[%d]].", v, i))
+      }
+    }
+
+    # Rescale weights: divide by number of cycles (CDC pooling convention)
+    df[[weight_var]] <- df[[weight_var]] / n_cycles
+
+    # Make subject IDs unique across cycles
+    if (make_unique_ids) {
+      df[[subject_var]] <- paste0(i, "_", df[[subject_var]])
+    }
+
+    # Tag with cycle identifier
+    df$cycle <- cycle_names[i]
+
+    result_list[[i]] <- df
+  }
+
+  # Row-bind (base R; avoids dplyr dependency)
+  combined <- do.call(rbind, result_list)
+  rownames(combined) <- NULL
+  combined
+}

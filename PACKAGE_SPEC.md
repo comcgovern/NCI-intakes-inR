@@ -713,29 +713,29 @@ nciusual/
 
 ## 10. Development Roadmap
 
-### v0.1.0 — Core Functionality
+### v0.1.0 — Core Functionality ✓ Released
 
 - [x] Box-Cox transformation utilities (validated)
 - [x] Amount-only model via `nlme::lme` (validated)
 - [x] Two-part uncorrelated model via `glmmPQL` + `lme` (validated)
-- [ ] Two-part correlated model via profile likelihood over ρ
+- [x] Two-part correlated model via profile likelihood over ρ
 - [x] DISTRIB Monte Carlo simulation (validated)
-- [ ] Weighted percentile/mean computation with proper survey weight handling
-- [ ] BRR standard error wrapper (parallel-capable)
-- [ ] `print`, `summary`, `plot` methods for all return objects
-- [ ] `distrib_to_df()` convenience function for tidy output
-- [ ] `testthat` test suite covering all synthetic data recovery tests
-- [ ] NHANES example vignette
-- [ ] CRAN-compatible package structure (roxygen2, NAMESPACE, etc.)
+- [x] Weighted percentile/mean computation with proper survey weight handling
+- [x] BRR standard error wrapper (parallel-capable)
+- [x] `print`, `summary`, `plot` methods for all return objects
+- [x] `distrib_to_df()` convenience function for tidy output
+- [x] `testthat` test suite covering all synthetic data recovery tests
+- [x] NHANES example vignette
+- [x] CRAN-compatible package structure (roxygen2, NAMESPACE, etc.)
 
-### v0.2.0 — Enhanced Accuracy
+### v0.2.0 — Enhanced Accuracy ✓ Released
 
-- [ ] `lme4::glmer` as alternative engine for probability model
-- [ ] INDIVINT individual predictions
+- [x] `lme4::glmer` as alternative engine for probability model (`prob_engine = "glmer"`)
+- [x] INDIVINT individual predictions (`indivint()` — BLUP-based, amount and two-part)
+- [x] Starting values from prior model fit (`start` parameter to `mixtran()`)
+- [x] NHANES multi-cycle weight helper (`combine_nhanes_cycles()`)
 - [ ] Rcpp-accelerated GH quadrature for correlated model (`engine = "ghq"`)
 - [ ] Cross-validation against SAS macro output on NCI example datasets
-- [ ] NHANES multi-cycle weight helper
-- [ ] Starting values from prior model fit
 
 ### v0.3.0 — Full SAS Parity
 
