@@ -664,8 +664,30 @@ fit_twopart_corr <- function(prep, lambda, verbose,
 
   # Replace any residual NAs (e.g. from subject lookup gaps) with 0 so that
   # the profile log-likelihood never receives NA inputs and cannot return NA.
+  n_na_r1 <- sum(is.na(r1))
+  n_na_r2 <- sum(is.na(r2))
   r1[is.na(r1)] <- 0
   r2[is.na(r2)] <- 0
+
+  # Guard against degenerate residuals: when too many residuals are zero
+  # (e.g. from NA replacement or failed random-effect extraction), the profile
+  # log-likelihood reduces to -0.5*n*log(1-rho^2) which increases with |rho|,
+  # causing the grid search to select a boundary value (rho ~ +-1).
+  # Detect this and fall back to rho = 0 (conservative but correct).
+  n_total <- length(r1)
+  n_both_nonzero <- sum(r1 != 0 & r2 != 0)
+  if (n_both_nonzero < 5 || n_na_r1 > 0.5 * n_total || n_na_r2 > 0.5 * n_total) {
+    if (verbose) {
+      message(sprintf(
+        "  Residuals degenerate (non-zero pairs: %d/%d, NAs replaced: r1=%d, r2=%d); falling back to rho = 0.",
+        n_both_nonzero, n_total, n_na_r1, n_na_r2
+      ))
+    }
+    warning("Too few valid residual pairs for profile likelihood; falling back to rho = 0.")
+    uncorr$rho <- 0
+    uncorr$rho_profile <- data.frame(rho = numeric(0), loglik = numeric(0))
+    return(uncorr)
+  }
 
   # Profile log-likelihood over rho:
   # Given rho, the bivariate density of (v1, v2) changes. We evaluate how well
@@ -704,6 +726,22 @@ fit_twopart_corr <- function(prep, lambda, verbose,
   )
   ll_fine <- vapply(rho_grid_fine, profile_loglik, numeric(1))
   rho_hat <- rho_grid_fine[safe_which_max(ll_fine)]
+
+  # Sanity check: if rho_hat is at the grid boundary, the profile likelihood
+  # likely degenerated (e.g. insufficient residual signal). Cross-check with
+  # the sample correlation of the residuals.
+  if (abs(rho_hat) >= 0.98) {
+    r_sample <- tryCatch(stats::cor(r1, r2), error = function(e) NA_real_)
+    if (is.na(r_sample) || sign(r_sample) != sign(rho_hat) || abs(r_sample) < 0.3) {
+      if (verbose) {
+        message(sprintf(
+          "    Profile rho (%.4f) at grid boundary; sample cor = %.4f. Using sample cor.",
+          rho_hat, ifelse(is.na(r_sample), 0, r_sample)
+        ))
+      }
+      rho_hat <- if (is.na(r_sample)) 0 else max(-0.95, min(0.95, r_sample))
+    }
+  }
 
   if (verbose) {
     message(sprintf("  Step 2: Profile likelihood over rho"))
