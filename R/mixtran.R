@@ -606,9 +606,14 @@ fit_twopart_corr <- function(prep, lambda, verbose,
   uncorr <- fit_twopart_uncorr(prep, lambda, verbose = FALSE,
                                 prob_engine = prob_engine, start = start)
 
-  if (!uncorr$converged) {
-    warning("Uncorrelated model failed. Cannot fit correlated model.")
-    uncorr$rho <- NA
+  if (!uncorr$converged || is.na(uncorr$sigma2_v1) || uncorr$sigma2_v1 <= 0) {
+    if (!uncorr$converged) {
+      warning("Uncorrelated model failed; falling back to rho = 0.")
+    } else {
+      warning("Probability variance (sigma2_v1) is NA or zero; falling back to rho = 0.")
+    }
+    uncorr$rho <- 0
+    uncorr$rho_profile <- data.frame(rho = numeric(0), loglik = numeric(0))
     return(uncorr)
   }
 
@@ -651,11 +656,11 @@ fit_twopart_corr <- function(prep, lambda, verbose,
     amt_re[common_subjects] <- amt_re_named[common_subjects]
   }
 
-  # Standardise to unit variance
+  # Standardise to unit variance (guard against NA/NaN/zero)
   sd_v1 <- sqrt(uncorr$sigma2_v1)
   sd_v2 <- sqrt(uncorr$sigma2_v2)
-  r1 <- if (sd_v1 > 0) prob_re / sd_v1 else prob_re
-  r2 <- if (sd_v2 > 0) amt_re  / sd_v2 else amt_re
+  r1 <- if (isTRUE(sd_v1 > 0)) prob_re / sd_v1 else prob_re
+  r2 <- if (isTRUE(sd_v2 > 0)) amt_re  / sd_v2 else amt_re
 
   # Profile log-likelihood over rho:
   # Given rho, the bivariate density of (v1, v2) changes. We evaluate how well
