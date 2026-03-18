@@ -34,7 +34,7 @@ jobs:
         run: |
           install.packages(c(
             "nlme", "MASS", "survey",
-            "testthat", "lme4"
+            "testthat", "lme4", "Rcpp"
           ), repos = "https://cloud.r-project.org")
         shell: Rscript {0}
 
