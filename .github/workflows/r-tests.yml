@@ -42,14 +42,53 @@ jobs:
         run: R CMD INSTALL --no-multiarch --with-keep.source .
 
       - name: Run testthat unit tests
+        id: unit-tests
+        continue-on-error: true
         run: |
           library(testthat)
           library(nciusual)
-          results <- test_dir("tests/testthat", reporter = "progress", stop_on_failure = TRUE)
+          results <- test_dir("tests/testthat", reporter = "progress", stop_on_failure = FALSE)
+          df <- as.data.frame(results)
+          fail_df <- df[df$failed > 0 | df$error, , drop = FALSE]
+          lines <- c("=== testthat Unit Test Failures ===", "")
+          if (nrow(fail_df) == 0) {
+            lines <- c(lines, "All unit tests passed.")
+          } else {
+            lines <- c(lines,
+              sprintf("%d test file(s) with failures (total failed: %d):",
+                      nrow(fail_df), sum(fail_df$failed)),
+              "")
+            for (i in seq_len(nrow(fail_df))) {
+              r <- fail_df[i, ]
+              lines <- c(lines,
+                sprintf("  File:    %s", r$file),
+                sprintf("  Failed:  %d  |  Errors: %s  |  Skipped: %d",
+                        r$failed, r$error, r$skipped),
+                "")
+            }
+          }
+          writeLines(lines, "test-failures.log")
           print(results)
+          if (nrow(fail_df) > 0) quit(status = 1)
         shell: Rscript {0}
 
       - name: Run SAS macro validation tests
+        id: validation-tests
+        continue-on-error: true
+        run: Rscript tests/test_validate.R 2>&1 | tee validate-output.log
+
+      - name: Upload failure log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-failure-log
+          path: |
+            test-failures.log
+            validate-output.log
+          if-no-files-found: ignore
+
+      - name: Fail job if any tests failed
+        if: always() && (steps.unit-tests.outcome == 'failure' || steps.validation-tests.outcome == 'failure')
         run: |
-          source("tests/test_validate.R")
-        shell: Rscript {0}
+          echo "One or more test steps failed. See the 'test-failure-log' artifact for details."
+          exit 1
