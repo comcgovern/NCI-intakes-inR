@@ -35,7 +35,7 @@ make_episodic_data <- function(n_subjects    = 700,
 }
 
 test_that("uncorrelated two-part model recovers variance components within 25%", {
-  dat <- make_episodic_data()
+  dat <- make_episodic_data(n_subjects = 1000)
   fit <- suppressMessages(mixtran(
     data       = dat,
     intake_var = "wholegrain_g",

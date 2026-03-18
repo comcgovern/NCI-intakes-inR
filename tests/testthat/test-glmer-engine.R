@@ -42,7 +42,7 @@ test_that("glmer engine runs and returns a mixtran_fit", {
 
 test_that("glmer engine recovers variance components within 30%", {
   skip_if_not_installed("lme4")
-  dat <- make_episodic_glmer(n_subjects = 700)
+  dat <- make_episodic_glmer(n_subjects = 1200)
   fit <- suppressMessages(suppressWarnings(mixtran(
     data        = dat,
     intake_var  = "intake",
