@@ -1,0 +1,385 @@
+Run library(testthat) 
+✔ | F W S OK | Context 
+⠏ | 0 | amount-model 
+⠋ | 1 | amount-model 
+⠸ | 14 | amount-model 
+✔ | 17 | amount-model 
+⠏ | 0 | bivariate 
+⠋ | 1 | bivariate 
+⠦ | 7 | bivariate 
+⠇ | 9 | bivariate 
+⠙ | 12 | bivariate 
+⠴ | 16 | bivariate 
+⠦ | 17 | bivariate 
+✔ | 18 | bivariate [1.2s] 
+⠏ | 0 | boxcox 
+✔ | 14 | boxcox 
+⠏ | 0 | brr 
+⠋ | 1 | brr 
+⠴ | 6 | brr 
+✔ | 9 | brr [1.1s] 
+⠏ | 0 | distrib 
+⠋ | 1 | distrib 
+⠦ | 7 | distrib 
+⠧ | 1 7 | distrib 
+⠇ | 1 8 | distrib 
+⠸ | 2 12 | distrib 
+⠧ | 2 16 | distrib 
+✖ | 2 19 | distrib [1.8s] 
+──────────────────────────────────────────────────────────────────────────────── 
+Failure ('test-distrib.R:63:3'): distrib mean is within 10% of theoretical 
+Expected Mean within 10% of theoretical <= 0.1. 
+Actual comparison: 4.1 > 0.1 
+Difference: 4.0 > 0 
+Failure ('test-distrib.R:80:3'): distrib cutpoints work correctly 
+Expected `r$cutpoint_below + r$cutpoint_above` to equal `rep(1, 3)`. 
+Differences: 
+names for target but not for current 
+──────────────────────────────────────────────────────────────────────────────── 
+⠏ | 0 | ghq-engine 
+⠼ | 5 30 | ghq-engine 
+⠏ | 5 35 | ghq-engine 
+⠙ | 5 37 | ghq-engine 
+⠸ | 5 39 | ghq-engine 
+✖ | 5 41 | ghq-engine [6.7s] 
+──────────────────────────────────────────────────────────────────────────────── 
+Failure ('test-ghq-engine.R:15:5'): gh_nodes_weights returns correct structure 
+Expected `sum(gh$weights)` to equal `sqrt(pi)`. 
+Differences: 
+1/1 mismatches 
+[1] 2.49 - 1.77 == 0.716 
+Failure ('test-ghq-engine.R:24:5'): gh_nodes_normal weights sum to 1 
+Expected `sum(ghn$weights)` to equal 1. 
+Differences: 
+1/1 mismatches 
+[1] 1 - 1 == 0.000708 
+Failure ('test-ghq-engine.R:49:3'): gh_nodes_bivariate marginal variances match inputs 
+Expected `ev1_sq` to equal 4. 
+Differences: 
+1/1 mismatches 
+[1] 7.7 - 4 == 3.7 
+Failure ('test-ghq-engine.R:50:3'): gh_nodes_bivariate marginal variances match inputs 
+Expected `ev2_sq` to equal 9. 
+Differences: 
+1/1 mismatches 
+[1] 17.3 - 9 == 8.34 
+Failure ('test-ghq-engine.R:58:3'): gh_nodes_bivariate covariance matches rho * sigma_v1 * sigma_v2 
+Expected `cov_v1v2` to equal `rho * sv1 * sv2`. 
+Differences: 
+1/1 mismatches 
+[1] 2.89 - 1.5 == 1.39 
+──────────────────────────────────────────────────────────────────────────────── 
+⠏ | 0 | glmer-engine 
+⠋ | 1 | glmer-engine 
+⠼ | 1 4 | glmer-engine 
+⠦ | 1 6 | glmer-engine 
+⠇ | 1 8 | glmer-engine 
+⠼ | 1 14 | glmer-engine 
+✖ | 1 15 | glmer-engine [2.0s] 
+──────────────────────────────────────────────────────────────────────────────── 
+Failure ('test-glmer-engine.R:58:3'): glmer engine recovers variance components within 30% 
+Expected sigma2_v1 within 30% (glmer) <= 0.3. 
+Actual comparison: 0.50 > 0.30 
+Difference: 0.20 > 0 
+──────────────────────────────────────────────────────────────────────────────── 
+⠏ | 0 | indivint 
+⠦ | 7 | indivint 
+⠧ | 8 | indivint 
+⠹ | 13 | indivint 
+⠸ | 14 | indivint 
+⠼ | 15 | indivint 
+✔ | 17 | indivint [1.4s] 
+⠏ | 0 | nhanes-helpers 
+✔ | 10 | nhanes-helpers 
+⠏ | 0 | twopart-corr 
+⠋ | 1 | twopart-corr 
+⠸ | 1 3 | twopart-corr 
+⠼ | 1 4 | twopart-corr 
+✖ | 1 6 | twopart-corr 
+──────────────────────────────────────────────────────────────────────────────── 
+Failure ('test-twopart-corr.R:73:3'): correlated model rho estimate has correct sign for positive correlation 
+Expected rho positive when true rho = 0.6 > 0. 
+Actual comparison: -0.47 <= 0.00 
+Difference: -0.47 <= 0 
+──────────────────────────────────────────────────────────────────────────────── 
+⠏ | 0 | twopart-uncorr 
+⠋ | 1 | twopart-uncorr 
+⠦ | 1 6 | twopart-uncorr 
+✖ | 1 13 | twopart-uncorr 
+──────────────────────────────────────────────────────────────────────────────── 
+Failure ('test-twopart-uncorr.R:57:3'): uncorrelated two-part model recovers variance components within 25% 
+Expected sigma2_v1 within 25% <= 0.25. 
+Actual comparison: 0.37 > 0.25 
+Difference: 0.12 > 0 
+──────────────────────────────────────────────────────────────────────────────── 
+Maximum number of failures exceeded; quitting. 
+ℹ Increase this number with (e.g.) `testthat::set_max_fails(Inf)` 
+file context 
+1 test-amount-model.R amount-model 
+2 test-amount-model.R amount-model 
+3 test-amount-model.R amount-model 
+4 test-amount-model.R amount-model 
+5 test-amount-model.R amount-model 
+6 test-bivariate.R bivariate 
+7 test-bivariate.R bivariate 
+8 test-bivariate.R bivariate 
+9 test-bivariate.R bivariate 
+10 test-bivariate.R bivariate 
+11 test-bivariate.R bivariate 
+12 test-boxcox.R boxcox 
+13 test-boxcox.R boxcox 
+14 test-boxcox.R boxcox 
+15 test-boxcox.R boxcox 
+16 test-boxcox.R boxcox 
+17 test-boxcox.R boxcox 
+18 test-brr.R brr 
+19 test-brr.R brr 
+20 test-brr.R brr 
+21 test-distrib.R distrib 
+22 test-distrib.R distrib 
+23 test-distrib.R distrib 
+24 test-distrib.R distrib 
+25 test-distrib.R distrib 
+26 test-distrib.R distrib 
+27 test-distrib.R distrib 
+28 test-ghq-engine.R ghq-engine 
+29 test-ghq-engine.R ghq-engine 
+30 test-ghq-engine.R ghq-engine 
+31 test-ghq-engine.R ghq-engine 
+32 test-ghq-engine.R ghq-engine 
+33 test-ghq-engine.R ghq-engine 
+34 test-ghq-engine.R ghq-engine 
+35 test-ghq-engine.R ghq-engine 
+36 test-ghq-engine.R ghq-engine 
+37 test-ghq-engine.R ghq-engine 
+38 test-ghq-engine.R ghq-engine 
+39 test-glmer-engine.R glmer-engine 
+40 test-glmer-engine.R glmer-engine 
+41 test-glmer-engine.R glmer-engine 
+42 test-glmer-engine.R glmer-engine 
+43 test-glmer-engine.R glmer-engine 
+44 test-glmer-engine.R glmer-engine 
+45 test-glmer-engine.R glmer-engine 
+46 test-indivint.R indivint 
+47 test-indivint.R indivint 
+48 test-indivint.R indivint 
+49 test-indivint.R indivint 
+50 test-indivint.R indivint 
+51 test-indivint.R indivint 
+52 test-indivint.R indivint 
+53 test-nhanes-helpers.R nhanes-helpers 
+54 test-nhanes-helpers.R nhanes-helpers 
+55 test-nhanes-helpers.R nhanes-helpers 
+56 test-nhanes-helpers.R nhanes-helpers 
+57 test-nhanes-helpers.R nhanes-helpers 
+58 test-nhanes-helpers.R nhanes-helpers 
+59 test-nhanes-helpers.R nhanes-helpers 
+60 test-nhanes-helpers.R nhanes-helpers 
+61 test-twopart-corr.R twopart-corr 
+62 test-twopart-corr.R twopart-corr 
+63 test-twopart-corr.R twopart-corr 
+64 test-twopart-uncorr.R twopart-uncorr 
+65 test-twopart-uncorr.R twopart-uncorr 
+66 test-twopart-uncorr.R twopart-uncorr 
+test 
+1 amount model recovers variance components within 15% 
+2 amount model returns required fields 
+3 mixtran stops on missing variables 
+4 amount model auto-estimates lambda 
+5 zero replacement works for amount model 
+6 distrib_bivariate returns correct class and components 
+7 distrib_bivariate component means are in plausible range 
+8 distrib_bivariate ratio is positive and finite 
+9 bivariate_to_df returns 3-row data frame 
+10 print.bivariate_distrib runs without error 
+11 distrib_bivariate custom fn_ratio works (e.g. sodium density = Na/1000*kcal) 
+12 boxcox_transform and boxcox_inverse are inverses 
+13 boxcox_transform with lambda=0 is log transform 
+14 boxcox_transform rejects non-positive values 
+15 boxcox_inverse handles edge cases without crashing 
+16 find_optimal_lambda recovers lambda near 0.5 for chi-sq-like data 
+17 find_optimal_lambda uses log transform when lambda_raw < 0.15 
+18 brr_usual_intake returns a brr_result object 
+19 brr_to_df returns a data frame with expected columns 
+20 brr_usual_intake errors on mismatched replicate weight rows 
+21 distrib returns distrib_result with correct structure 
+22 usual intake distribution is narrower than observed 
+23 distrib mean is within 10% of theoretical 
+24 distrib cutpoints work correctly 
+25 distrib_to_df returns a data frame with one row per subgroup 
+26 distrib is reproducible with the same seed 
+27 weighted_quantiles returns correct quantiles 
+28 gh_nodes_weights returns correct structure 
+29 gh_nodes_normal weights sum to 1 
+30 gh_nodes_normal integrates x^2 against N(0,1) ≈ 1 
+31 gh_nodes_bivariate has correct dimensions 
+32 gh_nodes_bivariate marginal variances match inputs 
+33 gh_nodes_bivariate covariance matches rho * sigma_v1 * sigma_v2 
+34 gh_nodes_weights works for non-table n via eigenvalue method 
+35 GHQ engine returns valid mixtran_fit with correct rho sign 
+36 GHQ engine stores ghq_n_nodes in fit 
+37 GHQ and profile_rho engines give rho estimates with same sign 
+38 distrib() works correctly after GHQ-fitted mixtran 
+39 glmer engine runs and returns a mixtran_fit 
+40 glmer engine recovers variance components within 30% 
+41 glmmPQL and glmer engines yield similar variance component estimates 
+42 glmer engine works with corr model 
+43 start parameter does not change results for amount model 
+44 start parameter accepts mixtran_fit and runs without error for uncorr 
+45 start parameter rejects non-mixtran_fit objects 
+46 indivint returns one row per subject for amount model 
+47 indivint predictions are positive for amount model 
+48 indivint BLUP mean close to DISTRIB mean for amount model 
+49 indivint returns one row per subject for uncorr two-part model 
+50 indivint two-part probabilities are in [0, 1] 
+51 indivint predictions are non-negative for two-part model 
+52 indivint works for corr two-part model 
+53 combine_nhanes_cycles returns a data frame 
+54 combine_nhanes_cycles divides weights by n_cycles 
+55 combine_nhanes_cycles makes unique subject IDs by default 
+56 combine_nhanes_cycles with make_unique_ids=FALSE keeps original IDs 
+57 combine_nhanes_cycles adds cycle column 
+58 combine_nhanes_cycles respects custom cycle_names 
+59 combine_nhanes_cycles errors on missing weight_var 
+60 combine_nhanes_cycles errors on empty list 
+61 correlated two-part model returns valid rho in (-1, 1) 
+62 correlated model rho estimate has correct sign for positive correlation 
+63 correlated model stores rho_profile data frame 
+64 uncorrelated two-part model recovers variance components within 25% 
+65 uncorrelated two-part model returns required fields 
+66 two-part model errors without subjects having 2+ positive recalls 
+nb failed skipped error warning user system real passed 
+1 5 0 FALSE FALSE 0 0.213 0.019 0.261 5 
+2 8 0 FALSE FALSE 0 0.063 0.010 0.072 8 
+3 1 0 FALSE FALSE 0 0.010 0.000 0.009 1 
+4 2 0 FALSE FALSE 0 0.035 0.001 0.036 2 
+5 1 0 FALSE FALSE 0 0.029 0.000 0.028 1 
+6 6 0 FALSE FALSE 0 0.261 0.005 0.266 6 
+7 2 0 FALSE FALSE 0 0.275 0.002 0.277 2 
+8 3 0 FALSE FALSE 0 0.253 0.000 0.254 3 
+9 4 0 FALSE FALSE 0 0.101 0.000 0.101 4 
+10 1 0 FALSE FALSE 0 0.097 0.000 0.097 1 
+11 2 0 FALSE FALSE 0 0.170 0.001 0.172 2 
+12 5 0 FALSE FALSE 0 0.007 0.000 0.007 5 
+13 1 0 FALSE FALSE 0 0.003 0.000 0.003 1 
+14 2 0 FALSE FALSE 0 0.014 0.001 0.015 2 
+15 2 0 FALSE FALSE 0 0.006 0.000 0.006 2 
+16 3 0 FALSE FALSE 0 0.009 0.000 0.008 3 
+17 1 0 FALSE FALSE 0 0.017 0.004 0.020 1 
+18 5 0 FALSE FALSE 0 0.622 0.004 0.626 5 
+19 3 0 FALSE FALSE 0 0.446 0.003 0.449 3 
+20 1 0 FALSE FALSE 0 0.008 0.000 0.007 1 
+21 6 0 FALSE FALSE 0 0.259 0.000 0.260 6 
+22 1 0 FALSE FALSE 0 0.260 0.001 0.262 1 
+23 1 1 FALSE FALSE 0 0.271 0.010 0.281 0 
+24 5 1 FALSE FALSE 0 0.267 0.001 0.268 4 
+25 4 0 FALSE FALSE 0 0.254 0.001 0.256 4 
+26 2 0 FALSE FALSE 0 0.478 0.002 0.485 2 
+27 2 0 FALSE FALSE 0 0.005 0.000 0.005 2 
+28 20 1 FALSE FALSE 0 0.036 0.001 0.037 19 
+29 6 1 FALSE FALSE 0 0.015 0.000 0.015 5 
+30 1 0 FALSE FALSE 0 0.001 0.001 0.003 1 
+31 2 0 FALSE FALSE 0 0.005 0.000 0.005 2 
+32 2 2 FALSE FALSE 0 0.010 0.000 0.010 0 
+33 1 1 FALSE FALSE 0 0.006 0.000 0.006 0 
+34 2 0 FALSE FALSE 0 0.004 0.000 0.004 2 
+35 5 0 FALSE FALSE 0 2.719 0.004 2.724 5 
+36 2 0 FALSE FALSE 0 0.694 0.000 0.695 2 
+37 2 0 FALSE FALSE 0 2.253 0.006 2.259 2 
+38 3 0 FALSE FALSE 0 0.885 0.001 0.885 3 
+39 4 0 FALSE FALSE 0 0.995 0.033 1.029 4 
+40 2 1 FALSE FALSE 0 0.155 0.001 0.155 1 
+41 2 0 FALSE FALSE 0 0.352 0.011 0.362 2 
+42 3 0 FALSE FALSE 0 0.109 0.000 0.109 3 
+43 3 0 FALSE FALSE 0 0.043 0.000 0.043 3 
+44 1 0 FALSE FALSE 0 0.280 0.000 0.280 1 
+45 1 0 FALSE FALSE 0 0.006 0.000 0.006 1 
+46 5 0 FALSE FALSE 0 0.037 0.003 0.040 5 
+47 1 0 FALSE FALSE 0 0.037 0.000 0.037 1 
+48 1 0 FALSE FALSE 0 0.261 0.008 0.269 1 
+49 5 0 FALSE FALSE 0 0.261 0.003 0.264 5 
+50 1 0 FALSE FALSE 0 0.273 0.000 0.273 1 
+51 1 0 FALSE FALSE 0 0.309 0.002 0.311 1 
+52 3 0 FALSE FALSE 0 0.223 0.002 0.226 3 
+53 2 0 FALSE FALSE 0 0.007 0.000 0.006 2 
+54 1 0 FALSE FALSE 0 0.003 0.001 0.004 1 
+55 1 0 FALSE FALSE 0 0.004 0.000 0.004 1 
+56 1 0 FALSE FALSE 0 0.005 0.000 0.005 1 
+57 2 0 FALSE FALSE 0 0.006 0.000 0.006 2 
+58 1 0 FALSE FALSE 0 0.004 0.000 0.003 1 
+59 1 0 FALSE FALSE 0 0.006 0.000 0.006 1 
+60 1 0 FALSE FALSE 0 0.005 0.000 0.005 1 
+61 3 0 FALSE FALSE 0 0.239 0.001 0.240 3 
+62 1 1 FALSE FALSE 0 0.257 0.001 0.258 0 
+63 3 0 FALSE FALSE 0 0.128 0.000 0.128 3 
+64 6 1 FALSE FALSE 0 0.274 0.000 0.274 5 
+65 7 0 FALSE FALSE 0 0.174 0.002 0.176 7 
+66 1 0 FALSE FALSE 0 0.007 0.000 0.007 1 
+result 
+1 success, 45, 3, 45, 37, 3, 37, 45, 45, 35, 36, amount model recovers variance components within 15%, success, 46, 3, 46, 40, 3, 40, 46, 46, 35, 36, amount model recovers variance components within 15%, success, 47, 3, 47, 28, 3, 28, 47, 47, 35, 37, amount model recovers variance components within 15%, success, 51, 3, 51, 64, 3, 64, 51, 51, 35, 37, amount model recovers variance components within 15%, success, 52, 3, 52, 64, 3, 64, 52, 52, 35, 37, amount model recovers variance components within 15% 
+2 success, 67, 3, 67, 33, 3, 33, 67, 67, 35, 37, amount model returns required fields, success, 68, 3, 68, 37, 3, 37, 68, 68, 35, 37, amount model returns required fields, success, 69, 3, 69, 37, 3, 37, 69, 69, 35, 37, amount model returns required fields, success, 70, 3, 70, 38, 3, 38, 70, 70, 35, 37, amount model returns required fields, success, 71, 3, 71, 38, 3, 38, 71, 71, 35, 37, amount model returns required fields, success, 72, 3, 72, 38, 3, 38, 72, 72, 35, 37, amount model returns required fields, success, 73, 3, 73, 39, 3, 39, 73, 73, 35, 37, amount model returns required fields, success, 74, 3, 74, 36, 3, 36, 74, 74, 35, 36, amount model returns required fields 
+3 success, 79, 3, 90, 3, 3, 3, 79, 90, 35, 36, mixtran stops on missing variables 
+4 success, 104, 3, 104, 37, 3, 37, 104, 104, 35, 37, amount model auto-estimates lambda, success, 105, 3, 105, 49, 3, 49, 105, 105, 35, 37, amount model auto-estimates lambda 
+5 success, 122, 3, 122, 37, 3, 37, 122, 122, 35, 36, zero replacement works for amount model 
+6 success, 52, 3, 52, 43, 3, 43, 52, 52, 35, 36, distrib_bivariate returns correct class and components, success, 53, 3, 53, 39, 3, 39, 53, 53, 35, 37, distrib_bivariate returns correct class and components, success, 54, 3, 54, 39, 3, 39, 54, 54, 35, 37, distrib_bivariate returns correct class and components, success, 55, 3, 55, 34, 3, 34, 55, 55, 35, 37, distrib_bivariate returns correct class and components, success, 56, 3, 56, 38, 3, 38, 56, 56, 35, 37, distrib_bivariate returns correct class and components, success, 57, 3, 57, 54, 3, 54, 57, 57, 35, 37, distrib_bivariate returns correct class and components 
+7 success, 80, 3, 81, 79, 3, 79, 80, 81, 35, 37, distrib_bivariate component means are in plausible range, success, 84, 3, 85, 79, 3, 79, 84, 85, 35, 37, distrib_bivariate component means are in plausible range 
+8 success, 105, 3, 105, 36, 3, 36, 105, 105, 35, 37, distrib_bivariate ratio is positive and finite, success, 106, 3, 106, 29, 3, 29, 106, 106, 35, 37, distrib_bivariate ratio is positive and finite, success, 108, 3, 109, 83, 3, 83, 108, 109, 35, 37, distrib_bivariate ratio is positive and finite 
+9 success, 129, 3, 129, 35, 3, 35, 129, 129, 35, 36, bivariate_to_df returns 3-row data frame, success, 130, 3, 130, 27, 3, 27, 130, 130, 35, 36, bivariate_to_df returns 3-row data frame, success, 131, 3, 131, 41, 3, 41, 131, 131, 35, 37, bivariate_to_df returns 3-row data frame, success, 132, 3, 132, 36, 3, 36, 132, 132, 35, 37, bivariate_to_df returns 3-row data frame 
+10 success, 150, 3, 150, 53, 3, 53, 150, 150, 35, 37, print.bivariate_distrib runs without error 
+11 success, 170, 3, 170, 49, 3, 49, 170, 170, 35, 36, distrib_bivariate custom fn_ratio works (e.g. sodium density = Na/1000*kcal), success, 172, 3, 172, 54, 3, 54, 172, 172, 35, 37, distrib_bivariate custom fn_ratio works (e.g. sodium density = Na/1000*kcal) 
+12 success, 7, 5, 8, 53, 5, 53, 7, 8, 35, 36, boxcox_transform and boxcox_inverse are inverses, success, 7, 5, 8, 53, 5, 53, 7, 8, 35, 36, boxcox_transform and boxcox_inverse are inverses, success, 7, 5, 8, 53, 5, 53, 7, 8, 35, 36, boxcox_transform and boxcox_inverse are inverses, success, 7, 5, 8, 53, 5, 53, 7, 8, 35, 36, boxcox_transform and boxcox_inverse are inverses, success, 7, 5, 8, 53, 5, 53, 7, 8, 35, 36, boxcox_transform and boxcox_inverse are inverses 
+13 success, 15, 3, 15, 48, 3, 48, 15, 15, 35, 36, boxcox_transform with lambda=0 is log transform 
+14 success, 19, 3, 19, 58, 3, 58, 19, 19, 35, 36, boxcox_transform rejects non-positive values, success, 20, 3, 20, 59, 3, 59, 20, 20, 35, 36, boxcox_transform rejects non-positive values 
+15 success, 27, 3, 27, 32, 3, 32, 27, 27, 35, 37, boxcox_inverse handles edge cases without crashing, success, 28, 3, 28, 26, 3, 26, 28, 28, 35, 37, boxcox_inverse handles edge cases without crashing 
+16 success, 37, 3, 37, 38, 3, 38, 37, 37, 35, 36, find_optimal_lambda recovers lambda near 0.5 for chi-sq-like data, success, 38, 3, 38, 42, 3, 42, 38, 38, 35, 36, find_optimal_lambda recovers lambda near 0.5 for chi-sq-like data, success, 39, 3, 39, 47, 3, 47, 39, 39, 35, 37, find_optimal_lambda recovers lambda near 0.5 for chi-sq-like data 
+17 success, 49, 5, 49, 34, 5, 34, 49, 49, 35, 36, find_optimal_lambda uses log transform when lambda_raw < 0.15 
+18 success, 51, 3, 51, 36, 3, 36, 51, 51, 35, 36, brr_usual_intake returns a brr_result object, success, 52, 3, 52, 25, 3, 25, 52, 52, 35, 36, brr_usual_intake returns a brr_result object, success, 53, 3, 53, 38, 3, 38, 53, 53, 35, 37, brr_usual_intake returns a brr_result object, success, 54, 3, 54, 31, 3, 31, 54, 54, 35, 37, brr_usual_intake returns a brr_result object, success, 55, 3, 55, 31, 3, 31, 55, 55, 35, 37, brr_usual_intake returns a brr_result object 
+19 success, 79, 3, 79, 32, 3, 32, 79, 79, 35, 37, brr_to_df returns a data frame with expected columns, success, 80, 3, 80, 91, 3, 91, 80, 80, 35, 37, brr_to_df returns a data frame with expected columns, success, 81, 3, 81, 27, 3, 27, 81, 81, 35, 37, brr_to_df returns a data frame with expected columns 
+20 success, 89, 3, 106, 3, 3, 3, 89, 106, 35, 36, brr_usual_intake errors on mismatched replicate weight rows 
+21 success, 31, 3, 31, 40, 3, 40, 31, 31, 35, 36, distrib returns distrib_result with correct structure, success, 32, 3, 32, 36, 3, 36, 32, 32, 35, 37, distrib returns distrib_result with correct structure, success, 33, 3, 33, 48, 3, 48, 33, 33, 35, 37, distrib returns distrib_result with correct structure, success, 34, 3, 34, 49, 3, 49, 34, 34, 35, 37, distrib returns distrib_result with correct structure, success, 35, 3, 35, 47, 3, 47, 35, 35, 35, 37, distrib returns distrib_result with correct structure, success, 36, 3, 36, 56, 3, 56, 36, 36, 35, 37, distrib returns distrib_result with correct structure 
+22 success, 46, 3, 47, 85, 3, 85, 46, 47, 35, 37, usual intake distribution is narrower than observed 
+23 Expected Mean within 10% of theoretical <= 0.1.\nActual comparison: 4.1 > 0.1\nDifference: 4.0 > 0, 63, 3, 63, 69, 3, 69, 63, 63, 35, 37, distrib mean is within 10% of theoretical 
+24 success, 74, 3, 74, 41, 3, 41, 74, 74, 35, 37, distrib cutpoints work correctly, success, 75, 3, 75, 41, 3, 41, 75, 75, 35, 37, distrib cutpoints work correctly, success, 76, 3, 76, 44, 3, 44, 76, 76, 35, 36, distrib cutpoints work correctly, success, 78, 3, 78, 65, 3, 65, 78, 78, 35, 37, distrib cutpoints work correctly, Expected `r$cutpoint_below + r$cutpoint_above` to equal `rep(1, 3)`.\nDifferences:\nnames for target but not for current, 80, 3, 81, 44, 3, 44, 80, 81, 35, 36, distrib cutpoints work correctly 
+25 success, 89, 3, 89, 32, 3, 32, 89, 89, 35, 37, distrib_to_df returns a data frame with one row per subgroup, success, 90, 3, 90, 28, 3, 28, 90, 90, 35, 36, distrib_to_df returns a data frame with one row per subgroup, success, 91, 3, 91, 36, 3, 36, 91, 91, 35, 37, distrib_to_df returns a data frame with one row per subgroup, success, 92, 3, 92, 36, 3, 36, 92, 92, 35, 37, distrib_to_df returns a data frame with one row per subgroup 
+26 success, 100, 3, 100, 64, 3, 64, 100, 100, 35, 36, distrib is reproducible with the same seed, success, 101, 3, 101, 78, 3, 78, 101, 101, 35, 36, distrib is reproducible with the same seed 
+27 success, 110, 3, 110, 42, 3, 42, 110, 110, 35, 36, weighted_quantiles returns correct quantiles, success, 111, 3, 111, 41, 3, 41, 111, 111, 35, 37, weighted_quantiles returns correct quantiles 
+28 success, 11, 5, 11, 30, 5, 30, 11, 11, 35, 36, gh_nodes_weights returns correct structure, success, 12, 5, 12, 32, 5, 32, 12, 12, 35, 36, gh_nodes_weights returns correct structure, success, 13, 5, 13, 36, 5, 36, 13, 13, 35, 37, gh_nodes_weights returns correct structure, success, 15, 5, 15, 61, 5, 61, 15, 15, 35, 36, gh_nodes_weights returns correct structure, success, 17, 5, 17, 61, 5, 61, 17, 17, 35, 36, gh_nodes_weights returns correct structure, success, 11, 5, 11, 30, 5, 30, 11, 11, 35, 36, gh_nodes_weights returns correct structure, success, 12, 5, 12, 32, 5, 32, 12, 12, 35, 36, gh_nodes_weights returns correct structure, success, 13, 5, 13, 36, 5, 36, 13, 13, 35, 37, gh_nodes_weights returns correct structure, success, 15, 5, 15, 61, 5, 61, 15, 15, 35, 36, gh_nodes_weights returns correct structure, success, 17, 5, 17, 61, 5, 61, 17, 17, 35, 36, gh_nodes_weights returns correct structure, success, 11, 5, 11, 30, 5, 30, 11, 11, 35, 36, gh_nodes_weights returns correct structure, success, 12, 5, 12, 32, 5, 32, 12, 12, 35, 36, gh_nodes_weights returns correct structure, success, 13, 5, 13, 36, 5, 36, 13, 13, 35, 37, gh_nodes_weights returns correct structure, success, 15, 5, 15, 61, 5, 61, 15, 15, 35, 36, gh_nodes_weights returns correct structure, success, 17, 5, 17, 61, 5, 61, 17, 17, 35, 36, gh_nodes_weights returns correct structure, success, 11, 5, 11, 30, 5, 30, 11, 11, 35, 36, gh_nodes_weights returns correct structure, success, 12, 5, 12, 32, 5, 32, 12, 12, 35, 36, gh_nodes_weights returns correct structure, success, 13, 5, 13, 36, 5, 36, 13, 13, 35, 37, gh_nodes_weights returns correct structure, Expected `sum(gh$weights)` to equal `sqrt(pi)`.\nDifferences:\n1/1 mismatches\n[1] 2.49 - 1.77 == 0.716, 15, 5, 15, 61, 5, 61, 15, 15, 35, 36, gh_nodes_weights returns correct structure, success, 17, 5, 17, 61, 5, 61, 17, 17, 35, 36, gh_nodes_weights returns correct structure 
+29 success, 24, 5, 24, 56, 5, 56, 24, 24, 35, 36, gh_nodes_normal weights sum to 1, success, 25, 5, 25, 37, 5, 37, 25, 25, 35, 37, gh_nodes_normal weights sum to 1, Expected `sum(ghn$weights)` to equal 1.\nDifferences:\n1/1 mismatches\n[1] 1 - 1 == 0.000708, 24, 5, 24, 56, 5, 56, 24, 24, 35, 36, gh_nodes_normal weights sum to 1, success, 25, 5, 25, 37, 5, 37, 25, 25, 35, 37, gh_nodes_normal weights sum to 1, success, 24, 5, 24, 56, 5, 56, 24, 24, 35, 36, gh_nodes_normal weights sum to 1, success, 25, 5, 25, 37, 5, 37, 25, 25, 35, 37, gh_nodes_normal weights sum to 1 
+30 success, 33, 3, 33, 45, 3, 45, 33, 33, 35, 36, gh_nodes_normal integrates x^2 against N(0,1) ≈ 1 
+31 success, 38, 3, 38, 29, 3, 29, 38, 38, 35, 36, gh_nodes_bivariate has correct dimensions, success, 39, 3, 39, 63, 3, 63, 39, 39, 35, 37, gh_nodes_bivariate has correct dimensions 
+32 Expected `ev1_sq` to equal 4.\nDifferences:\n1/1 mismatches\n[1] 7.7 - 4 == 3.7, 49, 3, 49, 43, 3, 43, 49, 49, 35, 36, gh_nodes_bivariate marginal variances match inputs, Expected `ev2_sq` to equal 9.\nDifferences:\n1/1 mismatches\n[1] 17.3 - 9 == 8.34, 50, 3, 50, 43, 3, 43, 50, 50, 35, 36, gh_nodes_bivariate marginal variances match inputs 
+33 Expected `cov_v1v2` to equal `rho * sv1 * sv2`.\nDifferences:\n1/1 mismatches\n[1] 2.89 - 1.5 == 1.39, 58, 3, 58, 59, 3, 59, 58, 58, 35, 36, gh_nodes_bivariate covariance matches rho * sigma_v1 * sigma_v2 
+34 success, 63, 3, 63, 28, 3, 28, 63, 63, 35, 36, gh_nodes_weights works for non-table n via eigenvalue method, success, 64, 3, 64, 59, 3, 59, 64, 64, 35, 36, gh_nodes_weights works for non-table n via eigenvalue method 
+35 success, 113, 3, 113, 37, 3, 37, 113, 113, 35, 36, GHQ engine returns valid mixtran_fit with correct rho sign, success, 114, 3, 114, 38, 3, 38, 114, 114, 35, 36, GHQ engine returns valid mixtran_fit with correct rho sign, success, 115, 3, 115, 38, 3, 38, 115, 115, 35, 36, GHQ engine returns valid mixtran_fit with correct rho sign, success, 116, 3, 116, 42, 3, 42, 116, 116, 35, 37, GHQ engine returns valid mixtran_fit with correct rho sign, success, 118, 3, 118, 26, 3, 26, 118, 118, 35, 37, GHQ engine returns valid mixtran_fit with correct rho sign 
+36 success, 134, 3, 134, 35, 3, 35, 134, 134, 35, 36, GHQ engine stores ghq_n_nodes in fit, success, 135, 3, 135, 39, 3, 39, 135, 135, 35, 37, GHQ engine stores ghq_n_nodes in fit 
+37 success, 165, 3, 165, 28, 3, 28, 165, 165, 35, 37, GHQ and profile_rho engines give rho estimates with same sign, success, 166, 3, 166, 27, 3, 27, 166, 166, 35, 37, GHQ and profile_rho engines give rho estimates with same sign 
+38 success, 184, 3, 184, 39, 3, 39, 184, 184, 35, 36, distrib() works correctly after GHQ-fitted mixtran, success, 185, 3, 185, 48, 3, 48, 185, 185, 35, 37, distrib() works correctly after GHQ-fitted mixtran, success, 186, 3, 186, 42, 3, 42, 186, 186, 35, 37, distrib() works correctly after GHQ-fitted mixtran 
+39 success, 37, 3, 37, 37, 3, 37, 37, 37, 35, 36, glmer engine runs and returns a mixtran_fit, success, 38, 3, 38, 40, 3, 40, 38, 38, 35, 36, glmer engine runs and returns a mixtran_fit, success, 39, 3, 39, 40, 3, 40, 39, 39, 35, 37, glmer engine runs and returns a mixtran_fit, success, 40, 3, 40, 32, 3, 32, 40, 40, 35, 37, glmer engine runs and returns a mixtran_fit 
+40 Expected sigma2_v1 within 30% (glmer) <= 0.3.\nActual comparison: 0.50 > 0.30\nDifference: 0.20 > 0, 58, 3, 58, 66, 3, 66, 58, 58, 35, 37, glmer engine recovers variance components within 30%, success, 59, 3, 59, 66, 3, 66, 59, 59, 35, 37, glmer engine recovers variance components within 30% 
+41 success, 88, 3, 88, 72, 3, 72, 88, 88, 35, 36, glmmPQL and glmer engines yield similar variance component estimates, success, 92, 3, 93, 69, 3, 69, 92, 93, 35, 37, glmmPQL and glmer engines yield similar variance component estimates 
+42 success, 109, 3, 109, 37, 3, 37, 109, 109, 35, 36, glmer engine works with corr model, success, 110, 3, 110, 34, 3, 34, 110, 110, 35, 37, glmer engine works with corr model, success, 111, 3, 111, 44, 3, 44, 111, 111, 35, 37, glmer engine works with corr model 
+43 success, 149, 3, 149, 62, 3, 62, 149, 149, 35, 36, start parameter does not change results for amount model, success, 150, 3, 150, 62, 3, 62, 150, 150, 35, 36, start parameter does not change results for amount model, success, 151, 3, 151, 54, 3, 54, 151, 151, 35, 36, start parameter does not change results for amount model 
+44 success, 165, 3, 174, 5, 3, 5, 165, 174, 35, 37, start parameter accepts mixtran_fit and runs without error for uncorr 
+45 success, 178, 3, 188, 3, 3, 3, 178, 188, 35, 36, start parameter rejects non-mixtran_fit objects 
+46 success, 62, 3, 62, 39, 3, 39, 62, 62, 35, 36, indivint returns one row per subject for amount model, success, 63, 3, 63, 57, 3, 57, 63, 63, 35, 36, indivint returns one row per subject for amount model, success, 64, 3, 64, 56, 3, 56, 64, 64, 35, 37, indivint returns one row per subject for amount model, success, 65, 3, 65, 55, 3, 55, 65, 65, 35, 37, indivint returns one row per subject for amount model, success, 66, 3, 66, 56, 3, 56, 66, 66, 35, 37, indivint returns one row per subject for amount model 
+47 success, 81, 3, 81, 51, 3, 51, 81, 81, 35, 37, indivint predictions are positive for amount model 
+48 success, 104, 3, 105, 60, 3, 60, 104, 105, 35, 37, indivint BLUP mean close to DISTRIB mean for amount model 
+49 success, 122, 3, 122, 39, 3, 39, 122, 122, 35, 36, indivint returns one row per subject for uncorr two-part model, success, 123, 3, 123, 57, 3, 57, 123, 123, 35, 36, indivint returns one row per subject for uncorr two-part model, success, 124, 3, 124, 55, 3, 55, 124, 124, 35, 37, indivint returns one row per subject for uncorr two-part model, success, 125, 3, 125, 55, 3, 55, 125, 125, 35, 37, indivint returns one row per subject for uncorr two-part model, success, 126, 3, 126, 56, 3, 56, 126, 126, 35, 37, indivint returns one row per subject for uncorr two-part model 
+50 success, 141, 3, 141, 67, 3, 67, 141, 141, 35, 37, indivint two-part probabilities are in [0, 1] 
+51 success, 156, 3, 156, 52, 3, 52, 156, 156, 35, 37, indivint predictions are non-negative for two-part model 
+52 success, 171, 3, 171, 39, 3, 39, 171, 171, 35, 36, indivint works for corr two-part model, success, 172, 3, 172, 57, 3, 57, 172, 172, 35, 36, indivint works for corr two-part model, success, 173, 3, 173, 52, 3, 52, 173, 173, 35, 37, indivint works for corr two-part model 
+53 success, 27, 3, 27, 41, 3, 41, 27, 27, 35, 36, combine_nhanes_cycles returns a data frame, success, 28, 3, 28, 45, 3, 45, 28, 28, 35, 36, combine_nhanes_cycles returns a data frame 
+54 success, 45, 3, 45, 78, 3, 78, 45, 45, 35, 36, combine_nhanes_cycles divides weights by n_cycles 
+55 success, 58, 3, 58, 50, 3, 50, 58, 58, 35, 36, combine_nhanes_cycles makes unique subject IDs by default 
+56 success, 73, 3, 74, 41, 3, 41, 73, 74, 35, 37, combine_nhanes_cycles with make_unique_ids=FALSE keeps original IDs 
+57 success, 85, 3, 85, 43, 3, 43, 85, 85, 35, 37, combine_nhanes_cycles adds cycle column, success, 86, 3, 86, 64, 3, 64, 86, 86, 35, 37, combine_nhanes_cycles adds cycle column 
+58 success, 98, 3, 98, 60, 3, 60, 98, 98, 35, 37, combine_nhanes_cycles respects custom cycle_names 
+59 success, 103, 3, 106, 3, 3, 3, 103, 106, 35, 36, combine_nhanes_cycles errors on missing weight_var 
+60 success, 110, 3, 113, 3, 3, 3, 110, 113, 35, 36, combine_nhanes_cycles errors on empty list 
+61 success, 55, 3, 55, 37, 3, 37, 55, 55, 35, 36, correlated two-part model returns valid rho in (-1, 1), success, 56, 3, 56, 38, 3, 38, 56, 56, 35, 36, correlated two-part model returns valid rho in (-1, 1), success, 57, 3, 57, 42, 3, 42, 57, 57, 35, 37, correlated two-part model returns valid rho in (-1, 1) 
+62 Expected rho positive when true rho = 0.6 > 0.\nActual comparison: -0.47 <= 0.00\nDifference: -0.47 <= 0, 73, 3, 73, 67, 3, 67, 73, 73, 35, 37, correlated model rho estimate has correct sign for positive correlation 
+63 success, 88, 3, 88, 40, 3, 40, 88, 88, 35, 37, correlated model stores rho_profile data frame, success, 89, 3, 89, 45, 3, 45, 89, 89, 35, 37, correlated model stores rho_profile data frame, success, 90, 3, 90, 66, 3, 66, 90, 90, 35, 37, correlated model stores rho_profile data frame 
+64 success, 49, 3, 49, 37, 3, 37, 49, 49, 35, 36, uncorrelated two-part model recovers variance components within 25%, success, 50, 3, 50, 40, 3, 40, 50, 50, 35, 36, uncorrelated two-part model recovers variance components within 25%, success, 51, 3, 51, 26, 3, 26, 51, 51, 35, 36, uncorrelated two-part model recovers variance components within 25%, Expected sigma2_v1 within 25% <= 0.25.\nActual comparison: 0.37 > 0.25\nDifference: 0.12 > 0, 57, 3, 57, 58, 3, 58, 57, 57, 35, 37, uncorrelated two-part model recovers variance components within 25%, success, 58, 3, 58, 58, 3, 58, 58, 58, 35, 37, uncorrelated two-part model recovers variance components within 25%, success, 59, 3, 59, 57, 3, 57, 59, 59, 35, 37, uncorrelated two-part model recovers variance components within 25% 
+65 success, 74, 3, 74, 34, 3, 34, 74, 74, 35, 37, uncorrelated two-part model returns required fields, success, 75, 3, 75, 33, 3, 33, 75, 75, 35, 37, uncorrelated two-part model returns required fields, success, 76, 3, 76, 38, 3, 38, 76, 76, 35, 37, uncorrelated two-part model returns required fields, success, 77, 3, 77, 38, 3, 38, 77, 77, 35, 37, uncorrelated two-part model returns required fields, success, 78, 3, 78, 37, 3, 37, 78, 78, 35, 37, uncorrelated two-part model returns required fields, success, 79, 3, 79, 26, 3, 26, 79, 79, 35, 36, uncorrelated two-part model returns required fields, success, 80, 3, 80, 38, 3, 38, 80, 80, 35, 37, uncorrelated two-part model returns required fields 
+66 success, 94, 3, 105, 3, 3, 3, 94, 105, 35, 36, two-part model errors without subjects having 2+ positive recalls 
+Error: Process completed with exit code 1.
