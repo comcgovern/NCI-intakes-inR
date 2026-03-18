@@ -36,8 +36,14 @@ distrib <- function(mixtran_obj,
   model_type <- mixtran_obj$model_type
   lambda <- mixtran_obj$lambda
 
+  # --- Remove nuisance covariate effects (NCI convention) ---
+  # DISTRIB estimates usual intake at reference covariate values:
+  # seq_num = 0 (first recall) and weekend = 0 (weekday).
+  # User covariates (demographics) are retained at observed values.
+  pred <- .remove_nuisance_effects_distrib(pred, mixtran_obj)
+
   # Get unique subjects with their linear predictors and weights
-  subj_df <- get_subject_level_data(pred, model_type)
+  subj_df <- get_subject_level_data(pred, model_type, mixtran_obj)
 
   # Determine subgroups
   if (!is.null(subgroup_var)) {
@@ -109,12 +115,62 @@ distrib <- function(mixtran_obj,
 }
 
 
+#' Remove nuisance covariate effects from predicted linear predictors
+#'
+#' NCI convention: DISTRIB computes usual intake at reference covariate values
+#' (seq_num = 0, weekend = 0). This function subtracts these effects from the
+#' population-level linear predictors so that the Monte Carlo simulation
+#' produces usual intake for a reference ("usual") day.
+#'
+#' @keywords internal
+.remove_nuisance_effects_distrib <- function(pred, mixtran_obj) {
+  model_type <- mixtran_obj$model_type
+
+  if (model_type == "amount") {
+    beta <- mixtran_obj$beta
+    # Remove seq_num effect
+    if ("seq_num" %in% names(beta) && "seq_num" %in% names(pred)) {
+      pred$linpred <- pred$linpred - beta["seq_num"] * pred$seq_num
+    }
+    # Remove weekend effect
+    if ("weekend" %in% names(beta) && "weekend" %in% names(pred)) {
+      pred$linpred <- pred$linpred - beta["weekend"] * pred$weekend
+    }
+  } else {
+    alpha <- mixtran_obj$alpha
+    beta  <- mixtran_obj$beta
+
+    # Probability sub-model: remove seq_num and weekend from prob_linpred
+    if ("seq_num" %in% names(alpha) && "seq_num" %in% names(pred)) {
+      pred$prob_linpred <- pred$prob_linpred - alpha["seq_num"] * pred$seq_num
+    }
+    if ("weekend" %in% names(alpha) && "weekend" %in% names(pred)) {
+      pred$prob_linpred <- pred$prob_linpred - alpha["weekend"] * pred$weekend
+    }
+
+    # Amount sub-model: remove seq_num and weekend from amt_linpred
+    # (only for consumed rows where amt_linpred is not NA)
+    pos_mask <- !is.na(pred$amt_linpred)
+    if ("seq_num" %in% names(beta) && "seq_num" %in% names(pred)) {
+      pred$amt_linpred[pos_mask] <- pred$amt_linpred[pos_mask] -
+        beta["seq_num"] * pred$seq_num[pos_mask]
+    }
+    if ("weekend" %in% names(beta) && "weekend" %in% names(pred)) {
+      pred$amt_linpred[pos_mask] <- pred$amt_linpred[pos_mask] -
+        beta["weekend"] * pred$weekend[pos_mask]
+    }
+  }
+
+  pred
+}
+
+
 #' Get subject-level data from predicted dataset
 #' @keywords internal
-get_subject_level_data <- function(pred, model_type) {
-  # For each subject, get one row with their linear predictor(s) and weight
-  # For subjects with 2 recalls, average the covariate-adjusted predictions
-  # (NCI convention: use prediction at sequence=0, weekend=0 reference)
+get_subject_level_data <- function(pred, model_type, mixtran_obj = NULL) {
+  # For each subject, get one row with their linear predictor(s) and weight.
+  # Nuisance effects (seq_num, weekend) should already be removed by
+  # .remove_nuisance_effects_distrib() before calling this function.
 
   subjects <- unique(pred$subject)
 
@@ -129,12 +185,21 @@ get_subject_level_data <- function(pred, model_type) {
       )
     }))
   } else {
+    # For subjects who never consumed, amt_linpred is all NA. Use the
+    # population-level intercept (beta_0) as a fallback — this is the NCI
+    # convention: never-consumers' amount component is the population mean
+    # on the transformed scale.
+    global_amt_mean <- mean(pred$amt_linpred, na.rm = TRUE)
+
     subj_df <- do.call(rbind, lapply(subjects, function(s) {
       rows <- pred[pred$subject == s, ]
+      amt_lp <- mean(rows$amt_linpred, na.rm = TRUE)
+      # NaN means all amt_linpred were NA (never-consumer): use population mean
+      if (is.nan(amt_lp)) amt_lp <- global_amt_mean
       data.frame(
         subject = s,
         prob_linpred = mean(rows$prob_linpred, na.rm = TRUE),
-        amt_linpred = mean(rows$amt_linpred, na.rm = TRUE),
+        amt_linpred = amt_lp,
         weight = rows$weight[1],
         stringsAsFactors = FALSE
       )

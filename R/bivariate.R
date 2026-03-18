@@ -114,8 +114,12 @@ distrib_bivariate <- function(data,
   pred1 <- fit1$predicted
   pred2 <- fit2$predicted
 
-  subj1 <- get_subject_level_data(pred1, model_type1)
-  subj2 <- get_subject_level_data(pred2, model_type2)
+  # Remove nuisance effects (NCI convention: seq_num=0, weekend=0)
+  pred1 <- .remove_nuisance_effects_distrib(pred1, fit1)
+  pred2 <- .remove_nuisance_effects_distrib(pred2, fit2)
+
+  subj1 <- get_subject_level_data(pred1, model_type1, fit1)
+  subj2 <- get_subject_level_data(pred2, model_type2, fit2)
 
   # Align subjects (intersection, in the same order)
   common_subj <- intersect(subj1$subject, subj2$subject)
