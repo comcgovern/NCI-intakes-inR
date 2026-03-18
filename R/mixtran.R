@@ -627,15 +627,29 @@ fit_twopart_corr <- function(prep, lambda, verbose,
 
   # Subject-level standardised residuals from each part
   # Probability part: subject-level random effects are v1_i ~ N(0, sigma2_v1)
-  # We approximate v1_i by the empirical Bayes estimate, then standardise
-  prob_re <- tryCatch(
-    as.numeric(prob_ranef(uncorr$prob_fit)),
-    error = function(e) rep(0, prep$n_subjects)
+  # We approximate v1_i by the empirical Bayes estimate, then standardise.
+  # IMPORTANT: align by subject ID — amt_fit is fit only on consumed rows, so
+  # some subjects (never-consumers) may be absent from amt_re. Misalignment
+  # would corrupt the profile likelihood calculation.
+  all_subjects <- as.character(sort(unique(work$subject)))
+
+  prob_re_named <- tryCatch(
+    prob_ranef(uncorr$prob_fit),
+    error = function(e) setNames(rep(0, length(all_subjects)), all_subjects)
   )
-  amt_re <- tryCatch({
-    re_df <- nlme::ranef(uncorr$amt_fit)[[1]]  # data frame: rows=subjects, col="(Intercept)"
-    as.numeric(re_df[[1]])
-  }, error = function(e) rep(0, prep$n_subjects))
+  amt_re_named <- tryCatch({
+    re_df <- nlme::ranef(uncorr$amt_fit)[[1]]
+    setNames(as.numeric(re_df[[1]]), rownames(re_df))
+  }, error = function(e) setNames(rep(0, length(all_subjects)), all_subjects))
+
+  # Build aligned vectors (never-consumers get amt_re = 0)
+  prob_re <- as.numeric(prob_re_named[all_subjects])
+  amt_re  <- numeric(length(all_subjects))
+  names(amt_re) <- all_subjects
+  common_subjects <- intersect(all_subjects, names(amt_re_named))
+  if (length(common_subjects) > 0) {
+    amt_re[common_subjects] <- amt_re_named[common_subjects]
+  }
 
   # Standardise to unit variance
   sd_v1 <- sqrt(uncorr$sigma2_v1)

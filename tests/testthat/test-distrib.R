@@ -53,7 +53,7 @@ test_that("distrib mean is within 10% of theoretical", {
 
   # Theoretical mean: E[T^{-1}(beta0 + u)] where u ~ N(0, sigma2_b)
   theo_samp  <- boxcox_inverse(
-    stats::rnorm(100000, mean(fit$beta), sqrt(fit$sigma2_b)),
+    stats::rnorm(100000, fit$beta[["(Intercept)"]], sqrt(fit$sigma2_b)),
     fit$lambda
   )
   theo_mean  <- mean(theo_samp)
@@ -77,7 +77,7 @@ test_that("distrib cutpoints work correctly", {
   # proportions must be in [0,1]
   expect_true(all(r$cutpoint_below >= 0 & r$cutpoint_below <= 1))
   # above + below = 1
-  expect_equal(r$cutpoint_below + r$cutpoint_above,
+  expect_equal(unname(r$cutpoint_below + r$cutpoint_above),
                rep(1, 3), tolerance = 1e-10)
 })
 
