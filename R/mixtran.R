@@ -35,6 +35,18 @@ NULL
 #'   variance components. `"glmer"` uses `lme4::glmer()` with Laplace
 #'   approximation for full ML, giving closer parity with SAS PROC NLMIXED.
 #'   Requires the **lme4** package.
+#' @param corr_engine Engine for the correlated two-part model
+#'   (`model_type = "corr"` only). `"profile_rho"` (default) uses profile
+#'   likelihood over a grid of ρ values — fast and robust, but approximate.
+#'   `"ghq"` uses Gauss-Hermite quadrature to integrate out the bivariate
+#'   random effects and optimises over (σ²_v1, σ²_v2, σ²_e, ρ) jointly,
+#'   providing more accurate variance component and ρ estimates at the cost
+#'   of additional computation. The number of quadrature nodes is controlled
+#'   by `ghq_n_nodes`.
+#' @param ghq_n_nodes Number of Gauss-Hermite quadrature nodes per dimension
+#'   when `corr_engine = "ghq"`. Total bivariate nodes = `ghq_n_nodes^2`.
+#'   Supported values: 3, 5 (default), 7, 9. Larger values are more accurate
+#'   but slower. 5 is typically sufficient for variance component estimation.
 #' @param start Optional `mixtran_fit` object from a previous call. When
 #'   supplied, its fixed-effect estimates are used as starting values for the
 #'   optimiser, which can improve convergence speed and stability (useful in
@@ -55,10 +67,13 @@ mixtran <- function(data,
                     lambda_grid = seq(0.01, 1.0, by = 0.01),
                     min_positive = NULL,
                     prob_engine = c("glmmPQL", "glmer"),
+                    corr_engine = c("profile_rho", "ghq"),
+                    ghq_n_nodes = 5L,
                     start = NULL,
                     verbose = TRUE) {
 
   prob_engine <- match.arg(prob_engine)
+  corr_engine <- match.arg(corr_engine)
   if (!is.null(start) && !inherits(start, "mixtran_fit")) {
     stop("'start' must be a mixtran_fit object or NULL.")
   }
@@ -109,10 +124,18 @@ mixtran <- function(data,
     result <- fit_twopart_uncorr(prep, lambda, verbose,
                                   prob_engine = prob_engine, start = start)
   } else {
-    result <- fit_twopart_corr(prep, lambda, verbose,
-                                prob_engine = prob_engine, start = start)
+    if (corr_engine == "ghq") {
+      result <- fit_twopart_corr_ghq(prep, lambda, verbose,
+                                      prob_engine = prob_engine,
+                                      n_nodes = ghq_n_nodes,
+                                      start = start)
+    } else {
+      result <- fit_twopart_corr(prep, lambda, verbose,
+                                  prob_engine = prob_engine, start = start)
+    }
   }
-  result$prob_engine <- prob_engine
+  result$prob_engine  <- prob_engine
+  result$corr_engine  <- if (model_type == "corr") corr_engine else NULL
 
   result$lambda <- lambda
   result$model_type <- model_type
@@ -679,6 +702,197 @@ fit_twopart_corr <- function(prep, lambda, verbose,
   )
 }
 
+
+# ---------------------------------------------------------------------------
+# GHQ engine for correlated two-part model (v0.2)
+# ---------------------------------------------------------------------------
+
+#' Fit two-part correlated model via Gauss-Hermite Quadrature
+#'
+#' Integrates out the bivariate random effects (v1_i, v2_i) using tensor-
+#' product Gauss-Hermite quadrature and optimises the marginal log-likelihood
+#' over the variance components (sigma2_v1, sigma2_v2, sigma2_e) and the
+#' correlation rho.
+#'
+#' Fixed effects (alpha for the probability sub-model and beta for the amount
+#' sub-model) are held at the estimates from the uncorrelated model; this
+#' mirrors the approach taken by the profile likelihood engine and is
+#' substantially faster than full joint optimisation over all parameters.
+#'
+#' @param prep Prepared data list from prepare_mixtran_data()
+#' @param lambda Box-Cox lambda (already determined)
+#' @param verbose Print progress
+#' @param prob_engine "glmmPQL" or "glmer" for the uncorr initialisation step
+#' @param n_nodes Number of GH nodes per dimension (default 5)
+#' @param start Optional mixtran_fit for warm-starting variance components
+#' @keywords internal
+fit_twopart_corr_ghq <- function(prep, lambda, verbose,
+                                  prob_engine = "glmmPQL",
+                                  n_nodes = 5L,
+                                  start = NULL) {
+
+  if (verbose) message(sprintf(
+    "Fitting two-part correlated model (GHQ, n_nodes=%d)...", n_nodes))
+
+  # --- Step 1: starting values from uncorrelated model ---
+  if (verbose) message("  Step 1: Fitting uncorrelated model for starting values...")
+  uncorr <- fit_twopart_uncorr(prep, lambda, verbose = FALSE,
+                                prob_engine = prob_engine, start = start)
+
+  if (!uncorr$converged) {
+    warning("Uncorrelated model did not converge; falling back to profile_rho.")
+    return(fit_twopart_corr(prep, lambda, verbose,
+                             prob_engine = prob_engine, start = start))
+  }
+
+  work      <- prep$data
+  cov_names <- prep$cov_names
+
+  # Population-level linear predictors (no random effects)
+  eta_pop <- as.numeric(prob_popn_predict(uncorr$prob_fit, newdata = work))
+
+  work_pos     <- work[work$consumed == 1, ]
+  mu_pop       <- as.numeric(stats::predict(uncorr$amt_fit, level = 0))
+  y_pos        <- work_pos$intake
+  t_y_pos      <- boxcox_transform(y_pos, lambda)
+  log_y_pos    <- log(y_pos)
+
+  # Integer subject indices (1 : n_subj) for fast tapply-style aggregation
+  subjects     <- unique(work$subject)
+  subj_map     <- stats::setNames(seq_along(subjects), as.character(subjects))
+  person_id    <- as.integer(subj_map[as.character(work$subject)])
+  person_id_pos <- as.integer(subj_map[as.character(work_pos$subject)])
+  n_subj       <- prep$n_subjects
+
+  consumed <- work$consumed
+
+  # --- Step 2: marginal log-likelihood via GHQ ---
+  ghq_loglik <- function(log_sv1, log_sv2, log_se, atanh_rho) {
+    sigma_v1 <- exp(log_sv1)
+    sigma_v2 <- exp(log_sv2)
+    sigma_e  <- exp(log_se)
+    rho      <- tanh(atanh_rho)
+
+    nodes_biv <- gh_nodes_bivariate(n_nodes, rho, sigma_v1, sigma_v2)
+    n_q       <- nrow(nodes_biv)
+
+    # log-lik contribution matrix: n_subj × n_q
+    ll_mat <- matrix(0, nrow = n_subj, ncol = n_q)
+
+    for (q in seq_len(n_q)) {
+      v1_q <- nodes_biv$v1[q]
+      v2_q <- nodes_biv$v2[q]
+
+      # Probability contributions (all observations)
+      eta_q <- eta_pop + v1_q
+      log_p <- ifelse(consumed == 1L,
+                      stats::plogis(eta_q, log.p = TRUE),
+                      stats::plogis(eta_q, log.p = TRUE, lower.tail = FALSE))
+      log_prob_subj <- as.numeric(tapply(log_p, person_id, sum))
+
+      # Amount contributions (positive observations only)
+      log_amt_subj <- numeric(n_subj)
+      if (length(t_y_pos) > 0L) {
+        log_f <- stats::dnorm(t_y_pos, mean = mu_pop + v2_q,
+                              sd = sigma_e, log = TRUE) +
+                 (lambda - 1) * log_y_pos
+        amt_by_subj <- tapply(log_f, person_id_pos, sum)
+        log_amt_subj[as.integer(names(amt_by_subj))] <-
+          as.numeric(amt_by_subj)
+      }
+
+      ll_mat[, q] <- log_prob_subj + log_amt_subj
+    }
+
+    # Log-sum-exp over quadrature points: log L_i = log Σ_q w_q exp(ll_iq)
+    lw <- nodes_biv$log_weight   # length n_q
+    ll_plus_lw <- ll_mat + matrix(lw, nrow = n_subj, ncol = n_q, byrow = TRUE)
+    row_max    <- apply(ll_plus_lw, 1, max)
+    log_marg   <- row_max + log(rowSums(exp(ll_plus_lw - row_max)))
+    sum(log_marg)
+  }
+
+  # --- Step 3: optimise variance components + rho ---
+  if (verbose) message("  Step 2: Optimising variance components via GHQ...")
+
+  # Starting values from uncorr fit (or prior start if supplied)
+  if (!is.null(start) && inherits(start, "mixtran_fit") &&
+      !is.null(start$sigma2_v1)) {
+    sv1_init <- log(sqrt(start$sigma2_v1))
+    sv2_init <- log(sqrt(start$sigma2_v2))
+    se_init  <- log(sqrt(start$sigma2_e))
+    rho_init <- atanh(min(max(start$rho, -0.95), 0.95))
+  } else {
+    sv1_init <- log(sqrt(uncorr$sigma2_v1))
+    sv2_init <- log(sqrt(uncorr$sigma2_v2))
+    se_init  <- log(sqrt(uncorr$sigma2_e))
+    rho_init <- atanh(0)
+  }
+
+  neg_ll <- function(par) {
+    tryCatch(
+      -ghq_loglik(par[1], par[2], par[3], par[4]),
+      error = function(e) 1e10
+    )
+  }
+
+  opt <- tryCatch(
+    stats::optim(
+      par     = c(sv1_init, sv2_init, se_init, rho_init),
+      fn      = neg_ll,
+      method  = "L-BFGS-B",
+      lower   = c(-6, -6, -6, -4),
+      upper   = c( 6,  6,  6,  4),
+      control = list(maxit = 300, factr = 1e8)
+    ),
+    error = function(e) {
+      if (verbose) message("    L-BFGS-B failed (", e$message,
+                           "); retrying with Nelder-Mead...")
+      tryCatch(
+        stats::optim(
+          par     = c(sv1_init, sv2_init, se_init, rho_init),
+          fn      = neg_ll,
+          method  = "Nelder-Mead",
+          control = list(maxit = 1000, reltol = 1e-6)
+        ),
+        error = function(e2) NULL
+      )
+    }
+  )
+
+  if (is.null(opt) || opt$convergence > 1) {
+    if (verbose) message("    GHQ optimisation did not converge; ",
+                         "falling back to profile_rho.")
+    return(fit_twopart_corr(prep, lambda, verbose,
+                             prob_engine = prob_engine, start = start))
+  }
+
+  p       <- opt$par
+  sigma_v1 <- exp(p[1]);  sigma_v2 <- exp(p[2])
+  sigma_e  <- exp(p[3]);  rho_hat  <- tanh(p[4])
+
+  if (verbose) {
+    message(sprintf("    sigma_v1 = %.4f  sigma_v2 = %.4f  sigma_e = %.4f  rho = %.4f",
+                    sigma_v1, sigma_v2, sigma_e, rho_hat))
+    message(sprintf("    GHQ log-likelihood = %.3f  (convergence code: %d)",
+                    -opt$value, opt$convergence))
+  }
+
+  list(
+    prob_fit    = uncorr$prob_fit,
+    amt_fit     = uncorr$amt_fit,
+    alpha       = uncorr$alpha,
+    beta        = uncorr$beta,
+    sigma2_v1   = sigma_v1^2,
+    sigma2_v2   = sigma_v2^2,
+    sigma2_e    = sigma_e^2,
+    rho         = rho_hat,
+    ghq_n_nodes = n_nodes,
+    ghq_loglik  = -opt$value,
+    predicted   = uncorr$predicted,
+    converged   = (opt$convergence == 0)
+  )
+}
 
 
 #' Print method for mixtran_fit objects

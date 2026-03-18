@@ -1,6 +1,6 @@
 Package: nciusual
 Title: NCI Method for Estimating Usual Dietary Intake Distributions
-Version: 0.2.0
+Version: 0.3.0
 Authors@R: person("Conor", "McGovern", email = "comcgovern@example.com",
     role = c("aut", "cre"))
 Description: R port of the National Cancer Institute (NCI) MIXTRAN, DISTRIB,
@@ -8,9 +8,12 @@ Description: R port of the National Cancer Institute (NCI) MIXTRAN, DISTRIB,
     from 24-hour dietary recall data. Supports amount-only models (for
     ubiquitously consumed nutrients) and two-part correlated/uncorrelated models
     (for episodically consumed foods). Offers a choice of probability sub-model
-    engine (MASS::glmmPQL or lme4::glmer) for the two-part model, individual
-    BLUP predictions via indivint(), and helpers for NHANES multi-cycle survey
-    weight pooling. Designed for use with NHANES data and complex survey designs.
+    engine (MASS::glmmPQL or lme4::glmer) and correlated-model engine (profile
+    likelihood over rho or Gauss-Hermite quadrature) for the two-part model.
+    Includes individual BLUP predictions via indivint(), bivariate usual intake
+    and ratio estimation via distrib_bivariate(), helpers for NHANES multi-cycle
+    survey weight pooling, and adaptive Gauss-Hermite quadrature utilities.
+    Designed for use with NHANES data and complex survey designs.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
@@ -26,4 +29,5 @@ Suggests:
     lme4,
     future.apply,
     nhanesA,
-    haven
+    haven,
+    Rcpp

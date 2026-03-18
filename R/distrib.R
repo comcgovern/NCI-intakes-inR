@@ -154,41 +154,34 @@ get_subject_level_data <- function(pred, model_type) {
 #' Note: Within-person error (epsilon) is NOT added because we want
 #' usual (habitual) intake, not single-day intake.
 #'
+#' Vectorized: all n_subj × n_sims random effects drawn in one call;
+#' the Box-Cox inverse is applied to the full matrix — no per-subject loop.
+#'
 #' @keywords internal
 simulate_amount_model <- function(subj_df, beta, sigma2_b, sigma2_w,
                                    lambda, n_sims) {
 
   n_subj <- nrow(subj_df)
-  sd_b <- sqrt(sigma2_b)
+  sd_b   <- sqrt(sigma2_b)
 
-  # For each subject, simulate n_sims between-person random effects
-  # and compute usual intake on the original scale
-  usual_intake <- numeric(n_subj * n_sims)
+  # Draw all between-person random effects at once: n_subj × n_sims
+  u_mat <- matrix(stats::rnorm(n_subj * n_sims, mean = 0, sd = sd_b),
+                  nrow = n_subj, ncol = n_sims)
 
-  for (i in seq_len(n_subj)) {
-    # Simulated between-person random effects
-    u_sim <- stats::rnorm(n_sims, mean = 0, sd = sd_b)
+  # Broadcast: linpred[i] is added to row i of u_mat (R recycling is column-major,
+  # so we rely on the fact that linpred[i] is added to u_mat[i, j] for all j)
+  t_usual_mat <- subj_df$linpred + u_mat  # n_subj × n_sims
 
-    # Usual intake on transformed scale
-    # Use population-level linear predictor (covariates at reference values)
-    # NCI convention: remove sequence and weekend effects from prediction
-    t_usual <- subj_df$linpred[i] + u_sim
+  # Back-transform and clamp
+  ui_mat <- pmax(boxcox_inverse(t_usual_mat, lambda), 0)
 
-    # Back-transform to original scale
-    ui <- boxcox_inverse(t_usual, lambda)
-
-    # Ensure non-negative
-    ui <- pmax(ui, 0)
-
-    idx_start <- (i - 1) * n_sims + 1
-    idx_end <- i * n_sims
-    usual_intake[idx_start:idx_end] <- ui
-  }
+  # Flatten row-major: subject i occupies positions (i-1)*n_sims+1 : i*n_sims
+  usual_intake <- as.vector(t(ui_mat))
 
   list(
     usual_intake = usual_intake,
-    n_subjects = n_subj,
-    n_sims = n_sims
+    n_subjects   = n_subj,
+    n_sims       = n_sims
   )
 }
 
@@ -200,47 +193,46 @@ simulate_amount_model <- function(subj_df, beta, sigma2_b, sigma2_w,
 #'   Amount|consume = T^{-1}(X'beta + v2_i)
 #'   Usual intake = P(consume) * E[Amount|consume]
 #'
+#' Vectorized: all n_subj × n_sims random effects drawn as matrices;
+#' probability and amount computed via matrix operations — no per-subject loop.
+#'
 #' @keywords internal
 simulate_twopart_model <- function(subj_df, alpha, beta,
                                     sigma2_v1, sigma2_v2, sigma2_e,
                                     rho, lambda, n_sims) {
 
-  n_subj <- nrow(subj_df)
-  sd_v1 <- sqrt(sigma2_v1)
-  sd_v2 <- sqrt(sigma2_v2)
+  n_subj    <- nrow(subj_df)
+  sd_v1     <- sqrt(sigma2_v1)
+  sd_v2     <- sqrt(sigma2_v2)
+  rho_safe  <- min(max(rho, -0.9999), 0.9999)
+  sqrt_1r2  <- sqrt(1 - rho_safe^2)
 
-  usual_intake <- numeric(n_subj * n_sims)
+  # Draw independent standard normals: n_subj × n_sims
+  z1_mat <- matrix(stats::rnorm(n_subj * n_sims), nrow = n_subj, ncol = n_sims)
+  z2_mat <- matrix(stats::rnorm(n_subj * n_sims), nrow = n_subj, ncol = n_sims)
 
-  for (i in seq_len(n_subj)) {
-    # Generate correlated random effects
-    z1 <- stats::rnorm(n_sims)
-    z2 <- stats::rnorm(n_sims)
-    v1 <- sd_v1 * z1
-    v2 <- sd_v2 * (rho * z1 + sqrt(max(0, 1 - rho^2)) * z2)
+  # Correlated random effects via Cholesky (bivariate normal)
+  v1_mat <- sd_v1 * z1_mat
+  v2_mat <- sd_v2 * (rho_safe * z1_mat + sqrt_1r2 * z2_mat)
 
-    # Probability of consumption
-    eta_prob <- subj_df$prob_linpred[i] + v1
-    prob <- 1 / (1 + exp(-eta_prob))
+  # Probability: broadcast prob_linpred[i] across n_sims columns
+  eta_prob_mat <- subj_df$prob_linpred + v1_mat  # n_subj × n_sims
+  prob_mat     <- 1 / (1 + exp(-eta_prob_mat))
 
-    # Expected amount on transformed scale (no within-person error for usual)
-    t_amount <- subj_df$amt_linpred[i] + v2
+  # Amount: broadcast amt_linpred[i] across n_sims columns
+  t_amount_mat <- subj_df$amt_linpred + v2_mat
+  amount_mat   <- pmax(boxcox_inverse(t_amount_mat, lambda), 0)
 
-    # Back-transform amount
-    amount <- boxcox_inverse(t_amount, lambda)
-    amount <- pmax(amount, 0)
+  # Usual intake = P(consume) * E[amount | consume]
+  ui_mat <- prob_mat * amount_mat
 
-    # Usual intake = probability * amount
-    ui <- prob * amount
-
-    idx_start <- (i - 1) * n_sims + 1
-    idx_end <- i * n_sims
-    usual_intake[idx_start:idx_end] <- ui
-  }
+  # Flatten row-major: subject i occupies positions (i-1)*n_sims+1 : i*n_sims
+  usual_intake <- as.vector(t(ui_mat))
 
   list(
     usual_intake = usual_intake,
-    n_subjects = n_subj,
-    n_sims = n_sims
+    n_subjects   = n_subj,
+    n_sims       = n_sims
   )
 }
 

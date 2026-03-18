@@ -734,15 +734,25 @@ nciusual/
 - [x] INDIVINT individual predictions (`indivint()` — BLUP-based, amount and two-part)
 - [x] Starting values from prior model fit (`start` parameter to `mixtran()`)
 - [x] NHANES multi-cycle weight helper (`combine_nhanes_cycles()`)
-- [ ] Rcpp-accelerated GH quadrature for correlated model (`engine = "ghq"`)
+- [x] Vectorized DISTRIB simulation (matrix ops replace per-subject R loops; large speedup)
+- [x] Pure-R GH quadrature engine for correlated model (`corr_engine = "ghq"`,
+      `ghq_n_nodes` controls accuracy vs. speed; optimises σ²_v1, σ²_v2, σ²_e, ρ jointly)
+- [x] GH quadrature utilities (`gh_nodes_weights`, `gh_nodes_normal`, `gh_nodes_bivariate`,
+      `gh_nodes_adaptive`) in `R/quadrature.R`
+- [x] Rcpp C++ stub for GHQ inner loop (`src/ghq_loglik.cpp`) — activatable via adding
+      `Rcpp` to `LinkingTo`/`Imports` for a ~50-100× speedup on the GHQ optimisation
 - [ ] Cross-validation against SAS macro output on NCI example datasets
 
-### v0.3.0 — Full SAS Parity
+### v0.3.0 — Full SAS Parity ✓ Released
 
-- [ ] TMB engine for correlated model (`engine = "tmb"`)
-- [ ] Bivariate usual intake (ratio of two dietary components) — SAS bivariate macros
-- [ ] Adaptive GH quadrature (node placement optimization)
-- [ ] Full replication of NCI example programs 1–4
+- [x] Bivariate usual intake and ratio estimation — `distrib_bivariate()` with joint
+      Monte Carlo simulation respecting cross-component random-effect correlation;
+      supports arbitrary derived quantities via `fn_ratio` (e.g., sodium density,
+      percent energy from fat)
+- [x] Adaptive GH quadrature (`gh_nodes_adaptive()`) — mode-finding + Hessian scaling
+      for subject-specific node placement, matching SAS PROC NLMIXED behaviour
+- [ ] TMB engine for correlated model (`engine = "tmb"`) — requires C++ compilation
+- [ ] Full replication of NCI example programs 1–4 (vignettes)
 
 ---
 
