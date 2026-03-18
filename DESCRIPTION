@@ -23,11 +23,13 @@ Imports:
     stats,
     MASS,
     survey,
-    utils
+    utils,
+    Rcpp
+LinkingTo:
+    Rcpp
 Suggests:
     testthat (>= 3.0.0),
     lme4,
     future.apply,
     nhanesA,
-    haven,
-    Rcpp
+    haven
