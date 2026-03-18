@@ -383,3 +383,120 @@ result
 65 success, 74, 3, 74, 34, 3, 34, 74, 74, 35, 37, uncorrelated two-part model returns required fields, success, 75, 3, 75, 33, 3, 33, 75, 75, 35, 37, uncorrelated two-part model returns required fields, success, 76, 3, 76, 38, 3, 38, 76, 76, 35, 37, uncorrelated two-part model returns required fields, success, 77, 3, 77, 38, 3, 38, 77, 77, 35, 37, uncorrelated two-part model returns required fields, success, 78, 3, 78, 37, 3, 37, 78, 78, 35, 37, uncorrelated two-part model returns required fields, success, 79, 3, 79, 26, 3, 26, 79, 79, 35, 36, uncorrelated two-part model returns required fields, success, 80, 3, 80, 38, 3, 38, 80, 80, 35, 37, uncorrelated two-part model returns required fields 
 66 success, 94, 3, 105, 3, 3, 3, 94, 105, 35, 36, two-part model errors without subjects having 2+ positive recalls 
 Error: Process completed with exit code 1.
+
+Run Rscript tests/test_validate.R 2>&1 | tee validate-output.log
+================================================================== 
+NCI Usual Intake R Port - Validation Tests
+================================================================== 
+
+TEST 1: Amount-Only Model
+  Simulating sodium intake (consumed daily by everyone)
+  Generated 3222 recalls from 2000 subjects
+  Subjects with 2 recalls: 1222
+  True parameters:
+    lambda=0.30, beta0=15.00, sigma2_b=4.00, sigma2_w=2.50
+    Variance ratio (w/b): 0.62
+
+  Fitting model...
+Fitting amount-only model with nlme::lme()...
+  REML failed, trying ML...
+  Between-person variance (sigma2_b): 4.2109
+  Within-person variance  (sigma2_w): 2.4720
+  Variance ratio (within/between):    0.59
+  Fixed effects:
+    (Intercept): 14.9702
+    seq_num: -0.1911
+    weekend: 0.5090
+
+  --- Parameter Recovery ---
+  sigma2_b: true=4.00, estimated=4.2109
+  sigma2_w: true=2.50, estimated=2.4720
+  var_ratio: true=0.62, estimated=0.59
+  sigma2_b error: 5.3%
+  sigma2_w error: 1.1%
+  PASS: Variance components recovered within 15%
+
+  Running DISTRIB...
+NCI Usual Intake Distribution (DISTRIB)
+  Model type: amount
+  Intake var: sodium_mg
+  N sims:     200
+  Seed:       123
+
+--- Overall ---
+  Mean: 306.60  (SD: 113.39)
+  Percentiles:
+    p5: 148.07
+    p10: 174.37
+    p25: 224.89
+    p50: 292.20
+    p75: 372.50
+    p90: 457.64
+    p95: 514.10
+
+  --- Distribution Comparison ---
+  Mean:   theoretical=306.6, estimated=306.6
+  Median: theoretical=292.9, estimated=292.2
+  Mean error: 0.0%
+  PASS: Mean within 10% of theoretical
+
+TEST 2: Two-Part Uncorrelated Model
+  Simulating whole grain intake (episodic consumption)
+
+  Generated 2480 recalls, 39.3% with zero intake
+  Fitting uncorrelated two-part model...
+Fitting two-part uncorrelated model (prob engine: MASS::glmmPQL)...
+  Part 1: Probability of consumption...
+    Between-person variance (prob, PQL): 1.0565
+  Part 2: Amount consumed (conditional)...
+    Amount model REML failed, trying ML...
+    Between-person variance (amount): 1.4333
+    Within-person variance  (amount): 1.0570
+
+  --- Parameter Recovery ---
+  sigma2_v1 (prob):   true=1.00, est=1.0565
+  sigma2_v2 (amount): true=1.50, est=1.4333
+  sigma2_e  (within): true=1.00, est=1.0570
+  Errors: v1=5.6%, v2=4.4%, e=5.7%
+  PASS: All variance components within 25%
+
+  Running DISTRIB for two-part model...
+NCI Usual Intake Distribution (DISTRIB)
+  Model type: uncorr
+  Intake var: wholegrain_g
+  N sims:     200
+  Seed:       456
+
+--- Overall ---
+  Mean: 6.52  (SD: 5.15)
+  Percentiles:
+    p5: 1.07
+    p10: 1.58
+    p25: 2.88
+    p50: 5.17
+    p75: 8.69
+    p90: 13.15
+    p95: 16.55
+
+TEST 3: Box-Cox Lambda Optimization
+  True lambda ≈ 0.5, Estimated: 0.440 (raw: 0.440)
+  Used log: FALSE
+  PASS: Lambda within 0.15 of true value
+
+TEST 4: Within-Person Variance Removal
+  The estimated usual intake distribution should be NARROWER than
+  the observed single-day distribution.
+
+  Observed (single-day) SD: 145.9
+  Estimated usual intake SD: 113.4
+  Ratio (usual/observed):    0.777
+  PASS: Usual intake distribution is narrower (as expected)
+
+================================================================== 
+Validation complete. Review results above for any warnings.
+Key checks:
+  1. Variance component recovery (amount model)
+  2. Variance component recovery (two-part model)
+  3. Box-Cox lambda optimization
+  4. Within-person variance removal (distribution narrowing)
+================================================================== 
