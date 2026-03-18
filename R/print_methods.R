@@ -101,10 +101,10 @@ plot.mixtran_fit <- function(x, which = 1:4, ...) {
                      col = "steelblue", border = "white")
       xg <- seq(min(tz), max(tz), length.out = 200)
       if (x$model_type == "amount") {
-        mu    <- mean(x$beta)
+        mu    <- as.numeric(x$beta["(Intercept)"])
         sigma <- sqrt(x$sigma2_b + x$sigma2_w)
       } else {
-        mu    <- mean(x$beta)
+        mu    <- as.numeric(x$beta["(Intercept)"])
         sigma <- sqrt(x$sigma2_v2 + x$sigma2_e)
       }
       graphics::lines(xg, stats::dnorm(xg, mu, sigma),

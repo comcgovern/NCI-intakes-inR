@@ -500,6 +500,7 @@ fit_twopart_uncorr <- function(prep, lambda, verbose,
       data    = work_pos,
       method  = "REML",
       start   = amt_start,
+      weights = if (any(work_pos$weight != 1)) nlme::varFixed(~ 1/weight) else NULL,
       control = nlme::lmeControl(maxIter = 500, opt = "optim", returnObject = TRUE)
     )
   }, error = function(e) {
