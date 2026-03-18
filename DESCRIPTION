@@ -1,13 +1,16 @@
 Package: nciusual
 Title: NCI Method for Estimating Usual Dietary Intake Distributions
-Version: 0.1.0
+Version: 0.2.0
 Authors@R: person("Conor", "McGovern", email = "comcgovern@example.com",
     role = c("aut", "cre"))
-Description: R port of the National Cancer Institute (NCI) MIXTRAN and DISTRIB
-    SAS macros for estimating usual dietary intake distributions from 24-hour
-    dietary recall data. Supports amount-only models (for ubiquitously consumed
-    nutrients) and two-part correlated/uncorrelated models (for episodically
-    consumed foods). Designed for use with NHANES data and complex survey designs.
+Description: R port of the National Cancer Institute (NCI) MIXTRAN, DISTRIB,
+    and INDIVINT SAS macros for estimating usual dietary intake distributions
+    from 24-hour dietary recall data. Supports amount-only models (for
+    ubiquitously consumed nutrients) and two-part correlated/uncorrelated models
+    (for episodically consumed foods). Offers a choice of probability sub-model
+    engine (MASS::glmmPQL or lme4::glmer) for the two-part model, individual
+    BLUP predictions via indivint(), and helpers for NHANES multi-cycle survey
+    weight pooling. Designed for use with NHANES data and complex survey designs.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
@@ -16,7 +19,8 @@ Imports:
     nlme,
     stats,
     MASS,
-    survey
+    survey,
+    utils
 Suggests:
     testthat (>= 3.0.0),
     lme4,
