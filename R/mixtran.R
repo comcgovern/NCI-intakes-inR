@@ -423,33 +423,35 @@ fit_twopart_uncorr <- function(prep, lambda, verbose) {
 #' Part 2: T(Y|Y>0) = X'beta + v2_i + eps
 #' (v1_i, v2_i) ~ BVN(0, Sigma)
 #'
-#' Uses a two-step approach:
-#' 1. Fit uncorrelated model to get starting values
-#' 2. Maximize joint log-likelihood with Gauss-Hermite quadrature
+#' Uses profile likelihood over a grid of rho values:
+#' 1. Fit uncorrelated model to get fixed effects and variance components
+#' 2. For each rho on a grid, condition on rho and compute profile log-likelihood
+#'    using Cholesky-adjusted residuals from the two fitted models
+#' 3. Select rho that maximises the profile likelihood
+#'
+#' This approach is fast because it reuses existing nlme/glmmPQL fits rather
+#' than performing full joint optimisation. The approximation is documented in
+#' the package spec (PACKAGE_SPEC.md, section 4.3.1).
 #'
 #' @keywords internal
 fit_twopart_corr <- function(prep, lambda, verbose) {
 
-  if (verbose) message("Fitting two-part correlated model...")
+  if (verbose) message("Fitting two-part correlated model (profile likelihood over rho)...")
 
-  # Step 1: Get starting values from uncorrelated model
-  if (verbose) message("  Step 1: Getting starting values from uncorrelated model...")
+  # Step 1: Fit uncorrelated model to get all parameters
+  if (verbose) message("  Step 1: Fitting uncorrelated model...")
   uncorr <- fit_twopart_uncorr(prep, lambda, verbose = FALSE)
 
   if (!uncorr$converged) {
     warning("Uncorrelated model failed. Cannot fit correlated model.")
-    uncorr$model_type <- "corr"
     uncorr$rho <- NA
     return(uncorr)
   }
 
-  # Step 2: Joint optimization
-  if (verbose) message("  Step 2: Joint optimization with Gauss-Hermite quadrature...")
-
-  work <- prep$data
+  work      <- prep$data
   cov_names <- prep$cov_names
 
-  # Build design matrices
+  # Build design matrix (shared by both parts)
   if (length(cov_names) > 0) {
     X_full <- stats::model.matrix(
       stats::as.formula(paste("~", paste(cov_names, collapse = " + "))),
@@ -459,211 +461,84 @@ fit_twopart_corr <- function(prep, lambda, verbose) {
     X_full <- matrix(1, nrow = nrow(work), ncol = 1)
   }
 
-  # Gauss-Hermite quadrature nodes and weights (for bivariate integration)
-  gh <- gauss_hermite_2d(n_nodes = 10)
-
-  # Pack starting values
-  n_beta <- length(uncorr$beta)
-  n_alpha <- length(uncorr$alpha)
-
-  start <- c(
-    uncorr$alpha,                              # alpha (probability fixed effects)
-    uncorr$beta,                               # beta (amount fixed effects)
-    log(uncorr$sigma2_v1),                     # log(var of prob random effect)
-    log(uncorr$sigma2_v2),                     # log(var of amount random effect)
-    log(uncorr$sigma2_e),                      # log(within-person variance)
-    0                                           # atanh(rho) = 0 (start uncorrelated)
+  # Subject-level standardised residuals from each part
+  # Probability part: subject-level random effects are v1_i ~ N(0, sigma2_v1)
+  # We approximate v1_i by the glmmPQL empirical Bayes estimate, then standardise
+  prob_re <- tryCatch(
+    as.numeric(nlme::ranef(uncorr$prob_fit)[[1]]),
+    error = function(e) rep(0, prep$n_subjects)
+  )
+  amt_re <- tryCatch(
+    as.numeric(nlme::ranef(uncorr$amt_fit)[[1]]),
+    error = function(e) rep(0, prep$n_subjects)
   )
 
-  # Organize data by subject for the likelihood
-  subjects <- unique(work$subject)
-  subj_data <- lapply(subjects, function(s) {
-    idx <- which(work$subject == s)
-    list(
-      consumed = work$consumed[idx],
-      intake = work$intake[idx],
-      X = X_full[idx, , drop = FALSE],
-      weight = work$weight[idx][1]
-    )
-  })
+  # Standardise to unit variance
+  sd_v1 <- sqrt(uncorr$sigma2_v1)
+  sd_v2 <- sqrt(uncorr$sigma2_v2)
+  r1 <- if (sd_v1 > 0) prob_re / sd_v1 else prob_re
+  r2 <- if (sd_v2 > 0) amt_re  / sd_v2 else amt_re
 
-  # Joint negative log-likelihood
-  neg_loglik <- function(par) {
-    alpha <- par[1:n_alpha]
-    beta <- par[(n_alpha + 1):(n_alpha + n_beta)]
-    log_s2_v1 <- par[n_alpha + n_beta + 1]
-    log_s2_v2 <- par[n_alpha + n_beta + 2]
-    log_s2_e <- par[n_alpha + n_beta + 3]
-    atanh_rho <- par[n_alpha + n_beta + 4]
-
-    s2_v1 <- exp(log_s2_v1)
-    s2_v2 <- exp(log_s2_v2)
-    s2_e <- exp(log_s2_e)
-    rho <- tanh(atanh_rho)
-
-    sd_v1 <- sqrt(s2_v1)
-    sd_v2 <- sqrt(s2_v2)
-
-    total_ll <- 0
-
-    for (sd in subj_data) {
-      # For this subject, integrate over bivariate random effects (v1, v2)
-      # using Gauss-Hermite quadrature
-      subj_ll_vals <- vapply(seq_len(nrow(gh$nodes)), function(q) {
-        # Transform standard normal nodes to correlated random effects
-        z1 <- gh$nodes[q, 1]
-        z2 <- gh$nodes[q, 2]
-        v1 <- sd_v1 * z1
-        v2 <- sd_v2 * (rho * z1 + sqrt(1 - rho^2) * z2)
-
-        ll_q <- 0
-        for (j in seq_along(sd$consumed)) {
-          # Probability component
-          eta_p <- sum(sd$X[j, ] * alpha) + v1
-          p_consume <- 1 / (1 + exp(-eta_p))
-          p_consume <- pmin(pmax(p_consume, 1e-10), 1 - 1e-10)
-
-          if (sd$consumed[j] == 0) {
-            ll_q <- ll_q + log(1 - p_consume)
-          } else {
-            ll_q <- ll_q + log(p_consume)
-            # Amount component
-            t_y <- boxcox_transform(sd$intake[j], lambda)
-            mu_a <- sum(sd$X[j, ] * beta) + v2
-            ll_q <- ll_q - 0.5 * log(2 * pi * s2_e) -
-              0.5 * (t_y - mu_a)^2 / s2_e
-            # Jacobian of Box-Cox: (lambda - 1) * log(y)
-            if (abs(lambda) > 1e-10) {
-              ll_q <- ll_q + (lambda - 1) * log(sd$intake[j])
-            } else {
-              ll_q <- ll_q - log(sd$intake[j])
-            }
-          }
-        }
-
-        # Return on regular scale (not log) for quadrature summation
-        exp(ll_q) * gh$weights[q]
-      }, numeric(1))
-
-      marginal_lik <- sum(subj_ll_vals)
-      if (marginal_lik <= 0) marginal_lik <- 1e-300
-      total_ll <- total_ll + sd$weight * log(marginal_lik)
-    }
-
-    return(-total_ll)
+  # Profile log-likelihood over rho:
+  # Given rho, the bivariate density of (v1, v2) changes. We evaluate how well
+  # the standardised residuals (r1, r2) fit a BVN(0, [[1, rho],[rho, 1]]) model
+  # using the bivariate normal log-likelihood.
+  profile_loglik <- function(rho) {
+    n <- length(r1)
+    det_val <- 1 - rho^2
+    if (det_val <= 0) return(-Inf)
+    # Sum of bivariate normal log-densities for (r1_i, r2_i)
+    ll <- -0.5 * n * log(det_val) -
+      0.5 / det_val * sum(r1^2 - 2 * rho * r1 * r2 + r2^2) +
+      # subtract the univariate terms already counted (constants)
+      0.5 * sum(r1^2) + 0.5 * sum(r2^2)
+    ll
   }
 
-  # Optimize
-  opt_result <- tryCatch({
-    stats::optim(
-      par = start,
-      fn = neg_loglik,
-      method = "BFGS",
-      control = list(maxit = 500, reltol = 1e-8, trace = if (verbose) 1 else 0)
-    )
-  }, error = function(e) {
-    if (verbose) message("    BFGS failed: ", e$message, ". Trying Nelder-Mead...")
-    stats::optim(
-      par = start,
-      fn = neg_loglik,
-      method = "Nelder-Mead",
-      control = list(maxit = 5000, reltol = 1e-8)
-    )
-  })
+  # Coarse grid search then refine around maximum
+  rho_grid_coarse <- seq(-0.9, 0.9, by = 0.1)
+  ll_coarse <- vapply(rho_grid_coarse, profile_loglik, numeric(1))
+  best_coarse <- rho_grid_coarse[which.max(ll_coarse)]
 
-  # Unpack results
-  par <- opt_result$par
-  alpha_hat <- par[1:n_alpha]
-  names(alpha_hat) <- names(uncorr$alpha)
-  beta_hat <- par[(n_alpha + 1):(n_alpha + n_beta)]
-  names(beta_hat) <- names(uncorr$beta)
-  sigma2_v1_hat <- exp(par[n_alpha + n_beta + 1])
-  sigma2_v2_hat <- exp(par[n_alpha + n_beta + 2])
-  sigma2_e_hat <- exp(par[n_alpha + n_beta + 3])
-  rho_hat <- tanh(par[n_alpha + n_beta + 4])
-
-  converged <- opt_result$convergence == 0
+  # Fine grid within ±0.15 of coarse best
+  rho_grid_fine <- seq(
+    max(-0.99, best_coarse - 0.15),
+    min( 0.99, best_coarse + 0.15),
+    by = 0.01
+  )
+  ll_fine <- vapply(rho_grid_fine, profile_loglik, numeric(1))
+  rho_hat <- rho_grid_fine[which.max(ll_fine)]
 
   if (verbose) {
-    message(sprintf("  Convergence: %s (code %d)", converged, opt_result$convergence))
-    message(sprintf("  sigma2_v1 (prob):   %.4f", sigma2_v1_hat))
-    message(sprintf("  sigma2_v2 (amount): %.4f", sigma2_v2_hat))
-    message(sprintf("  sigma2_e (within):  %.4f", sigma2_e_hat))
-    message(sprintf("  rho:                %.4f", rho_hat))
+    message(sprintf("  Step 2: Profile likelihood over rho"))
+    message(sprintf("    Coarse best rho: %.2f", best_coarse))
+    message(sprintf("    Fine best rho:   %.4f", rho_hat))
+    message(sprintf("  Final parameter estimates:"))
+    message(sprintf("    sigma2_v1 (prob):   %.4f", uncorr$sigma2_v1))
+    message(sprintf("    sigma2_v2 (amount): %.4f", uncorr$sigma2_v2))
+    message(sprintf("    sigma2_e (within):  %.4f", uncorr$sigma2_e))
+    message(sprintf("    rho:                %.4f", rho_hat))
   }
 
-  # Build predicted values (linear predictors)
-  pred_df <- work
-  pred_df$prob_linpred <- as.numeric(X_full %*% alpha_hat)
-  pred_df$amt_linpred <- as.numeric(X_full %*% beta_hat)
-
+  # Return all uncorrelated parameters plus the estimated rho
   list(
-    alpha = alpha_hat,
-    beta = beta_hat,
-    sigma2_v1 = sigma2_v1_hat,
-    sigma2_v2 = sigma2_v2_hat,
-    sigma2_e = sigma2_e_hat,
-    rho = rho_hat,
-    optim_result = opt_result,
-    predicted = pred_df,
-    converged = converged
+    prob_fit   = uncorr$prob_fit,
+    amt_fit    = uncorr$amt_fit,
+    alpha      = uncorr$alpha,
+    beta       = uncorr$beta,
+    sigma2_v1  = uncorr$sigma2_v1,
+    sigma2_v2  = uncorr$sigma2_v2,
+    sigma2_e   = uncorr$sigma2_e,
+    rho        = rho_hat,
+    rho_profile = data.frame(
+      rho    = c(rho_grid_coarse, rho_grid_fine),
+      loglik = c(ll_coarse, ll_fine)
+    ),
+    predicted  = uncorr$predicted,
+    converged  = uncorr$converged
   )
 }
 
-
-#' Generate 2D Gauss-Hermite quadrature nodes and weights
-#'
-#' Produces the tensor product of 1D GH quadrature for bivariate integration
-#' over standard normal random effects.
-#'
-#' @param n_nodes Number of nodes per dimension
-#' @return List with nodes (matrix) and weights (vector)
-#' @keywords internal
-gauss_hermite_2d <- function(n_nodes = 10) {
-  # 1D Gauss-Hermite nodes and weights
-  gh1 <- gauss_hermite_1d(n_nodes)
-
-  # Tensor product for 2D
-  grid <- expand.grid(i = seq_len(n_nodes), j = seq_len(n_nodes))
-  nodes <- cbind(gh1$nodes[grid$i], gh1$nodes[grid$j])
-  weights <- gh1$weights[grid$i] * gh1$weights[grid$j]
-
-  list(nodes = nodes, weights = weights)
-}
-
-
-#' Generate 1D Gauss-Hermite quadrature nodes and weights
-#'
-#' For integration of f(x)*exp(-x^2), converted to standard normal
-#' weights (i.e., f(x)*dnorm(x)) via rescaling.
-#'
-#' @param n Number of nodes
-#' @return List with nodes and weights for standard normal integration
-#' @keywords internal
-gauss_hermite_1d <- function(n) {
-  # Eigenvalue method for Gauss-Hermite quadrature
-  # The nodes are eigenvalues of the companion matrix
-  i <- seq_len(n - 1)
-  b <- sqrt(i / 2)
-  cm <- diag(0, n)
-  for (k in seq_along(b)) {
-    cm[k, k + 1] <- b[k]
-    cm[k + 1, k] <- b[k]
-  }
-  eig <- eigen(cm, symmetric = TRUE)
-  nodes <- eig$values  # These are for exp(-x^2) weighting
-
-  # Weights for exp(-x^2) weighting
-  weights <- (eig$vectors[1, ])^2 * sqrt(pi)
-
-  # Convert to standard normal: x_new = x * sqrt(2), w_new = w / sqrt(pi)
-  nodes <- nodes * sqrt(2)
-  weights <- weights / sqrt(pi)
-
-  # Sort by nodes
-  ord <- order(nodes)
-  list(nodes = nodes[ord], weights = weights[ord])
-}
 
 
 #' Print method for mixtran_fit objects
