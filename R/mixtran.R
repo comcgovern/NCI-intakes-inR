@@ -662,26 +662,39 @@ fit_twopart_corr <- function(prep, lambda, verbose,
   r1 <- if (isTRUE(sd_v1 > 0)) prob_re / sd_v1 else prob_re
   r2 <- if (isTRUE(sd_v2 > 0)) amt_re  / sd_v2 else amt_re
 
+  # Replace any residual NAs (e.g. from subject lookup gaps) with 0 so that
+  # the profile log-likelihood never receives NA inputs and cannot return NA.
+  r1[is.na(r1)] <- 0
+  r2[is.na(r2)] <- 0
+
   # Profile log-likelihood over rho:
   # Given rho, the bivariate density of (v1, v2) changes. We evaluate how well
   # the standardised residuals (r1, r2) fit a BVN(0, [[1, rho],[rho, 1]]) model
   # using the bivariate normal log-likelihood.
   profile_loglik <- function(rho) {
+    if (!is.finite(rho)) return(-Inf)
     n <- length(r1)
     det_val <- 1 - rho^2
-    if (det_val <= 0) return(-Inf)
+    if (!is.finite(det_val) || det_val <= 0) return(-Inf)
     # Sum of bivariate normal log-densities for (r1_i, r2_i)
     ll <- -0.5 * n * log(det_val) -
       0.5 / det_val * sum(r1^2 - 2 * rho * r1 * r2 + r2^2) +
       # subtract the univariate terms already counted (constants)
       0.5 * sum(r1^2) + 0.5 * sum(r2^2)
+    if (!is.finite(ll)) return(-Inf)
     ll
+  }
+
+  # Helper: safe which.max that falls back to index 1 on NA/empty result
+  safe_which_max <- function(x) {
+    idx <- which.max(x)
+    if (length(idx) == 0L || is.na(idx)) 1L else idx
   }
 
   # Coarse grid search then refine around maximum
   rho_grid_coarse <- seq(-0.9, 0.9, by = 0.1)
   ll_coarse <- vapply(rho_grid_coarse, profile_loglik, numeric(1))
-  best_coarse <- rho_grid_coarse[which.max(ll_coarse)]
+  best_coarse <- rho_grid_coarse[safe_which_max(ll_coarse)]
 
   # Fine grid within ±0.15 of coarse best
   rho_grid_fine <- seq(
@@ -690,7 +703,7 @@ fit_twopart_corr <- function(prep, lambda, verbose,
     by = 0.01
   )
   ll_fine <- vapply(rho_grid_fine, profile_loglik, numeric(1))
-  rho_hat <- rho_grid_fine[which.max(ll_fine)]
+  rho_hat <- rho_grid_fine[safe_which_max(ll_fine)]
 
   if (verbose) {
     message(sprintf("  Step 2: Profile likelihood over rho"))
