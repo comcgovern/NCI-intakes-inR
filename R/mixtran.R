@@ -241,6 +241,68 @@ prepare_mixtran_data <- function(data, intake_var, subject_var, repeat_var,
 }
 
 
+#' Drop covariates that are constant within a data slice
+#'
+#' A covariate with fewer than 2 distinct non-NA values produces a singular
+#' design matrix. This helper silently removes such columns and emits a
+#' message() naming each dropped covariate so callers are aware.
+#'
+#' @param cov_names Character vector of candidate covariate names.
+#' @param data Data frame to check values against.
+#' @return Character vector of covariate names with constant columns removed.
+#' @keywords internal
+drop_constant_covs <- function(cov_names, data) {
+  if (length(cov_names) == 0L) return(cov_names)
+  keep <- vapply(cov_names, function(v) {
+    vals <- data[[v]]
+    length(unique(vals[!is.na(vals)])) >= 2L
+  }, logical(1L))
+  dropped <- cov_names[!keep]
+  if (length(dropped) > 0L) {
+    message("Dropping constant covariate(s) with fewer than 2 distinct non-NA values: ",
+            paste(dropped, collapse = ", "))
+  }
+  cov_names[keep]
+}
+
+
+#' Run nlme::lme with optim; on Singularity/MEEM/backsolve error retry with nlminb
+#'
+#' Both the REML and ML nlme::lme() calls can throw uncaught MEEM() /
+#' backsolve() errors when the data are near-singular and opt = "optim" is used.
+#' This wrapper catches those specific errors and retries with opt = "nlminb".
+#'
+#' @param fixed,random,data,method,start,weights Arguments forwarded to nlme::lme().
+#' @param verbose Logical; if TRUE emit a message when the nlminb retry fires.
+#' @return An nlme "lme" fit object.
+#' @keywords internal
+.lme_robust <- function(fixed, random, data, method,
+                        start = NULL, weights = NULL, verbose = FALSE) {
+  ctl_optim <- nlme::lmeControl(
+    maxIter = 500, msMaxIter = 500, opt = "optim", returnObject = TRUE
+  )
+  tryCatch(
+    nlme::lme(fixed = fixed, random = random, data = data, method = method,
+              start = start, weights = weights, control = ctl_optim),
+    error = function(e) {
+      if (grepl("Singularity|MEEM|backsolve", conditionMessage(e),
+                ignore.case = TRUE)) {
+        if (verbose) message(sprintf(
+          "  %s Singularity/MEEM detected – retrying with opt = \"nlminb\"...",
+          method))
+        ctl_nlminb <- nlme::lmeControl(
+          maxIter = 500, msMaxIter = 500, opt = "nlminb", returnObject = TRUE
+        )
+        nlme::lme(fixed = fixed, random = random, data = data, method = method,
+                  start = start, weights = weights, control = ctl_nlminb)
+      } else {
+        stop(e)
+      }
+    }
+  )
+}
+
+
 #' Fit amount-only model (for ubiquitously consumed nutrients)
 #'
 #' Model: T(Y_ij) = X_ij'beta + u_i + eps_ij
@@ -254,6 +316,10 @@ fit_amount_model <- function(prep, lambda, verbose, start = NULL) {
 
   # Apply Box-Cox transform
   work$t_intake <- boxcox_transform(work$intake, lambda)
+
+  # Drop covariates that are constant within this data slice (would produce a
+  # singular design matrix and an uncaught error from nlme::lme).
+  cov_names <- drop_constant_covs(cov_names, work)
 
   # Build formula
   # Fixed effects: intercept + covariates
@@ -282,35 +348,20 @@ fit_amount_model <- function(prep, lambda, verbose, start = NULL) {
     }
   }
 
+  wts <- if (any(work$weight != 1)) nlme::varFixed(~ 1/weight) else NULL
+
   fit <- tryCatch({
-    nlme::lme(
-      fixed = fixed_formula,
-      random = ~ 1 | subject,
-      data = work,
-      method = "REML",
-      start = lme_start,
-      weights = if (any(work$weight != 1)) nlme::varFixed(~ 1/weight) else NULL,
-      control = nlme::lmeControl(
-        maxIter = 500,
-        msMaxIter = 500,
-        opt = "optim",
-        returnObject = TRUE
-      )
+    # Primary: REML with optim; retries with nlminb on Singularity/MEEM/backsolve
+    .lme_robust(
+      fixed = fixed_formula, random = ~ 1 | subject, data = work,
+      method = "REML", start = lme_start, weights = wts, verbose = verbose
     )
   }, error = function(e) {
-    # Fall back to ML if REML fails
+    # Fall back to ML if REML fails for any other reason
     if (verbose) message("  REML failed, trying ML...")
-    nlme::lme(
-      fixed = fixed_formula,
-      random = ~ 1 | subject,
-      data = work,
-      method = "ML",
-      control = nlme::lmeControl(
-        maxIter = 500,
-        msMaxIter = 500,
-        opt = "optim",
-        returnObject = TRUE
-      )
+    .lme_robust(
+      fixed = fixed_formula, random = ~ 1 | subject, data = work,
+      method = "ML", start = NULL, weights = wts, verbose = verbose
     )
   })
 
@@ -372,9 +423,12 @@ fit_twopart_uncorr <- function(prep, lambda, verbose,
   # --- Part 1: Probability model (logistic GLMM) ---
   if (verbose) message("  Part 1: Probability of consumption...")
 
-  if (length(cov_names) > 0) {
+  # Drop covariates that are constant in this data slice (all rows for prob model)
+  prob_cov_names <- drop_constant_covs(cov_names, work)
+
+  if (length(prob_cov_names) > 0) {
     prob_formula_fixed <- stats::as.formula(
-      paste("consumed ~", paste(cov_names, collapse = " + "))
+      paste("consumed ~", paste(prob_cov_names, collapse = " + "))
     )
   } else {
     prob_formula_fixed <- stats::as.formula("consumed ~ 1")
@@ -391,7 +445,7 @@ fit_twopart_uncorr <- function(prep, lambda, verbose,
     }
     glmer_formula <- stats::as.formula(
       paste("consumed ~",
-            paste(if (length(cov_names) > 0) cov_names else "1", collapse = " + "),
+            paste(if (length(prob_cov_names) > 0) prob_cov_names else "1", collapse = " + "),
             "+ (1 | subject)")
     )
     prob_fit <- tryCatch({
@@ -472,9 +526,12 @@ fit_twopart_uncorr <- function(prep, lambda, verbose,
   work_pos <- work[work$consumed == 1, ]
   work_pos$t_intake <- boxcox_transform(work_pos$intake, lambda)
 
-  if (length(cov_names) > 0) {
+  # Drop covariates that are constant in the positive-only slice
+  amt_cov_names <- drop_constant_covs(cov_names, work_pos)
+
+  if (length(amt_cov_names) > 0) {
     amt_formula <- stats::as.formula(
-      paste("t_intake ~", paste(cov_names, collapse = " + "))
+      paste("t_intake ~", paste(amt_cov_names, collapse = " + "))
     )
   } else {
     amt_formula <- stats::as.formula("t_intake ~ 1")
@@ -493,24 +550,19 @@ fit_twopart_uncorr <- function(prep, lambda, verbose,
     }
   }
 
+  amt_wts <- if (any(work_pos$weight != 1)) nlme::varFixed(~ 1/weight) else NULL
+
   amt_fit <- tryCatch({
-    nlme::lme(
-      fixed   = amt_formula,
-      random  = ~ 1 | subject,
-      data    = work_pos,
-      method  = "REML",
-      start   = amt_start,
-      weights = if (any(work_pos$weight != 1)) nlme::varFixed(~ 1/weight) else NULL,
-      control = nlme::lmeControl(maxIter = 500, opt = "optim", returnObject = TRUE)
+    # Primary: REML with optim; retries with nlminb on Singularity/MEEM/backsolve
+    .lme_robust(
+      fixed = amt_formula, random = ~ 1 | subject, data = work_pos,
+      method = "REML", start = amt_start, weights = amt_wts, verbose = verbose
     )
   }, error = function(e) {
     if (verbose) message("    Amount model REML failed, trying ML...")
-    nlme::lme(
-      fixed   = amt_formula,
-      random  = ~ 1 | subject,
-      data    = work_pos,
-      method  = "ML",
-      control = nlme::lmeControl(maxIter = 500, opt = "optim", returnObject = TRUE)
+    .lme_robust(
+      fixed = amt_formula, random = ~ 1 | subject, data = work_pos,
+      method = "ML", start = NULL, weights = amt_wts, verbose = verbose
     )
   })
 
