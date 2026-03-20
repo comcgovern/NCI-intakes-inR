@@ -278,20 +278,37 @@ drop_constant_covs <- function(cov_names, data) {
 #' @keywords internal
 .lme_robust <- function(fixed, random, data, method,
                         start = NULL, weights = NULL, verbose = FALSE) {
-  # Build base arg list; only include `start` when non-NULL and supported by the
-  # installed nlme version (the `start` parameter was added in nlme >= 3.1-163)
-  lme_args <- list(fixed = fixed, random = random, data = data,
-                   method = method, weights = weights)
+  # Check whether the installed nlme version supports the `start` parameter
+  # (added in nlme >= 3.1-163)
   nlme_has_start <- "start" %in% names(formals(nlme::lme))
-  if (!is.null(start) && nlme_has_start) {
-    lme_args$start <- start
+  use_start <- !is.null(start) && nlme_has_start
+
+  # Helper: call nlme::lme() directly (NOT via do.call) to avoid scoping
+  # issues where nlme's internal match.call()/eval() chain fails to find
+  # functions in the correct namespace (manifests as "could not find function
+  # 'base_lme'" or similar errors).
+  call_lme <- function(ctl) {
+    if (use_start && !is.null(weights)) {
+      nlme::lme(fixed = fixed, random = random, data = data,
+                method = method, weights = weights, start = start,
+                control = ctl)
+    } else if (use_start) {
+      nlme::lme(fixed = fixed, random = random, data = data,
+                method = method, start = start, control = ctl)
+    } else if (!is.null(weights)) {
+      nlme::lme(fixed = fixed, random = random, data = data,
+                method = method, weights = weights, control = ctl)
+    } else {
+      nlme::lme(fixed = fixed, random = random, data = data,
+                method = method, control = ctl)
+    }
   }
 
   ctl_optim <- nlme::lmeControl(
     maxIter = 500, msMaxIter = 500, opt = "optim", returnObject = TRUE
   )
   tryCatch(
-    do.call(nlme::lme, c(lme_args, list(control = ctl_optim))),
+    call_lme(ctl_optim),
     error = function(e) {
       if (grepl("Singularity|MEEM|backsolve", conditionMessage(e),
                 ignore.case = TRUE)) {
@@ -302,7 +319,7 @@ drop_constant_covs <- function(cov_names, data) {
           maxIter = 500, msMaxIter = 500, opt = "nlminb", returnObject = TRUE
         )
         tryCatch(
-          do.call(nlme::lme, c(lme_args, list(control = ctl_nlminb))),
+          call_lme(ctl_nlminb),
           error = function(e2) {
             stop(sprintf(
               "nlme::lme() failed with both optim and nlminb (method = %s): %s",
