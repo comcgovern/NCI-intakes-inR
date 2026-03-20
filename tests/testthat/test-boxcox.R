@@ -51,3 +51,8 @@ test_that("find_optimal_lambda uses log transform when lambda_raw < 0.15", {
     expect_gte(result$lambda_raw, 0.15)
   }
 })
+
+test_that("find_optimal_lambda errors on empty input", {
+  expect_error(find_optimal_lambda(numeric(0)), "No positive values")
+  expect_error(find_optimal_lambda(c(0, 0, NA)), "No positive values")
+})

@@ -121,3 +121,38 @@ test_that("zero replacement works for amount model", {
   ))
   expect_s3_class(fit, "mixtran_fit")
 })
+
+test_that("all-zero intake errors by default, returns NULL with skip_if_empty = TRUE", {
+  dat <- make_amount_data(n_subjects = 100)
+  dat$sodium_mg <- 0  # all zeros
+
+  # Default: should error
+  expect_error(
+    suppressMessages(mixtran(
+      data        = dat,
+      intake_var  = "sodium_mg",
+      subject_var = "SEQN",
+      repeat_var  = "day",
+      model_type  = "amount",
+      lambda      = 0.30,
+      verbose     = FALSE
+    )),
+    "No positive intake values"
+  )
+
+  # skip_if_empty = TRUE: should warn and return NULL
+  result <- expect_warning(
+    mixtran(
+      data          = dat,
+      intake_var    = "sodium_mg",
+      subject_var   = "SEQN",
+      repeat_var    = "day",
+      model_type    = "amount",
+      lambda        = 0.30,
+      skip_if_empty = TRUE,
+      verbose       = FALSE
+    ),
+    "no positive intake values"
+  )
+  expect_null(result)
+})

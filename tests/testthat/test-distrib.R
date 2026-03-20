@@ -110,3 +110,14 @@ test_that("weighted_quantiles returns correct quantiles", {
   expect_equal(q[2], 5.5, tolerance = 0.1)   # median
   expect_true(q[1] < q[2] && q[2] < q[3])    # monotone
 })
+
+test_that("weighted_quantiles falls back to unweighted when all weights are zero", {
+  x <- c(1, 2, 3, 4, 5)
+  w_zero <- rep(0, 5)
+  q <- expect_warning(
+    nciusual:::weighted_quantiles(x, w_zero, c(0.5)),
+    "zero or non-finite"
+  )
+  expect_true(is.finite(q))
+  expect_equal(q, 3, tolerance = 0.01)  # unweighted median of 1:5
+})

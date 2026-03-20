@@ -56,6 +56,12 @@ find_optimal_lambda <- function(y,
   y_pos <- y[!is.na(y) & y > 0]
   n <- length(y_pos)
 
+  if (n == 0L) {
+    stop("No positive values in 'y'; cannot estimate Box-Cox lambda. ",
+         "Ensure the intake variable has at least some positive observations, ",
+         "or supply a fixed lambda.")
+  }
+
   if (is.null(weights)) {
     weights <- rep(1, length(y))
   }
