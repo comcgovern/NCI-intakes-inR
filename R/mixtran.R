@@ -47,6 +47,9 @@ NULL
 #'   when `corr_engine = "ghq"`. Total bivariate nodes = `ghq_n_nodes^2`.
 #'   Supported values: 3, 5 (default), 7, 9. Larger values are more accurate
 #'   but slower. 5 is typically sufficient for variance component estimation.
+#' @param subgroup_var Optional name of a subgroup variable (character) to
+#'   carry through to the predicted data for use by `distrib()`. The variable
+#'   is not used in model fitting — it is retained purely for labelling.
 #' @param start Optional `mixtran_fit` object from a previous call. When
 #'   supplied, its fixed-effect estimates are used as starting values for the
 #'   optimiser, which can improve convergence speed and stability (useful in
@@ -61,6 +64,7 @@ mixtran <- function(data,
                     repeat_var,
                     model_type = c("amount", "uncorr", "corr"),
                     covariates = NULL,
+                    subgroup_var = NULL,
                     weekend_var = NULL,
                     weight_var = NULL,
                     lambda = NULL,
@@ -86,6 +90,7 @@ mixtran <- function(data,
   if (!is.null(weekend_var)) required_vars <- c(required_vars, weekend_var)
   if (!is.null(weight_var)) required_vars <- c(required_vars, weight_var)
   if (!is.null(covariates)) required_vars <- c(required_vars, covariates)
+  if (!is.null(subgroup_var)) required_vars <- c(required_vars, subgroup_var)
   missing_vars <- setdiff(required_vars, names(data))
   if (length(missing_vars) > 0) {
     stop("Variables not found in data: ", paste(missing_vars, collapse = ", "))
@@ -137,11 +142,21 @@ mixtran <- function(data,
   result$prob_engine  <- prob_engine
   result$corr_engine  <- if (model_type == "corr") corr_engine else NULL
 
+  # Merge subgroup variable back into predicted via a subject-level join.
+  # prepare_mixtran_data() renames subject_var -> "subject", so match on that.
+  if (!is.null(subgroup_var)) {
+    subj_lookup <- unique(data[, c(subject_var, subgroup_var), drop = FALSE])
+    names(subj_lookup)[names(subj_lookup) == subject_var] <- "subject"
+    result$predicted <- merge(result$predicted, subj_lookup,
+                              by = "subject", all.x = TRUE)
+  }
+
   result$lambda <- lambda
   result$model_type <- model_type
   result$intake_var <- intake_var
   result$subject_var <- subject_var
   result$covariates <- covariates
+  result$subgroup_var <- subgroup_var
   result$weekend_var <- weekend_var
   result$n_subjects <- prep$n_subjects
   result$n_recalls <- nrow(prep$data)
