@@ -190,6 +190,11 @@ get_subject_level_data <- function(pred, model_type, mixtran_obj = NULL) {
     # convention: never-consumers' amount component is the population mean
     # on the transformed scale.
     global_amt_mean <- mean(pred$amt_linpred, na.rm = TRUE)
+    if (is.nan(global_amt_mean)) {
+      warning("All amt_linpred values are NA (no consumers in sample); ",
+              "amount sub-model estimates will be the population intercept only.",
+              call. = FALSE)
+    }
 
     subj_df <- do.call(rbind, lapply(subjects, function(s) {
       rows <- pred[pred$subject == s, ]
@@ -314,6 +319,19 @@ compute_distribution_summary <- function(sim_vals, weights, percentiles, cutpoin
   sim_vals <- sim_vals[valid]
   weights <- weights[valid]
 
+  if (length(sim_vals) == 0L) {
+    warning("No valid simulated values after removing NAs; ",
+            "returning NA for all summary statistics.", call. = FALSE)
+    na_pct <- setNames(rep(NA_real_, length(percentiles)), paste0("p", percentiles))
+    return(list(
+      mean = NA_real_, sd = NA_real_,
+      percentiles = na_pct,
+      cutpoint_below = if (!is.null(cutpoints)) setNames(rep(NA_real_, length(cutpoints)), paste0("pct_below_", cutpoints)) else NULL,
+      cutpoint_above = if (!is.null(cutpoints)) setNames(rep(NA_real_, length(cutpoints)), paste0("pct_above_", cutpoints)) else NULL,
+      n_simulated = 0L
+    ))
+  }
+
   # Weighted mean
   wmean <- stats::weighted.mean(sim_vals, weights)
 
@@ -359,7 +377,14 @@ weighted_quantiles <- function(x, w, probs) {
   w <- w[ord]
 
   # Cumulative normalized weights
-  cw <- cumsum(w) / sum(w)
+  sw <- sum(w)
+  if (!is.finite(sw) || sw <= 0) {
+    warning("All survey weights are zero or non-finite; falling back to unweighted quantiles.",
+            call. = FALSE)
+    w <- rep(1, length(w))
+    sw <- length(w)
+  }
+  cw <- cumsum(w) / sw
 
   vapply(probs, function(p) {
     if (p <= cw[1]) return(x[1])

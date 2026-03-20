@@ -54,12 +54,14 @@ NULL
 #'   supplied, its fixed-effect estimates are used as starting values for the
 #'   optimiser, which can improve convergence speed and stability (useful in
 #'   BRR replicates or when re-fitting after a lambda update).
-#' @param skip_if_empty Logical (default `FALSE`). When `TRUE` and
-#'   `model_type = "amount"`, if the intake variable has no positive values
-#'   (all zeros or missing), `mixtran()` emits a warning and returns `NULL`
-#'   instead of stopping with an error. Useful when iterating over many foods
+#' @param skip_if_empty Logical (default `FALSE`). When `TRUE`, if the data
+#'   are insufficient to fit the requested model, `mixtran()` emits a warning
+#'   and returns `NULL` instead of stopping with an error. For
+#'   `model_type = "amount"` this triggers when there are no positive intake
+#'   values; for two-part models (`"uncorr"`, `"corr"`) it triggers when no
+#'   subject has 2+ positive recalls. Useful when iterating over many foods
 #'   with `lapply()` or `purrr::map()` where some items may be entirely absent
-#'   in the sample (e.g., school-only foods in a general population dataset).
+#'   or rarely consumed in the sample.
 #' @param verbose Print model fitting progress
 #' @return A `mixtran_fit` object containing parameter estimates, predicted
 #'   values, and diagnostics needed for the DISTRIB step. Returns `NULL`
@@ -105,15 +107,30 @@ mixtran <- function(data,
     stop("Variables not found in data: ", paste(missing_vars, collapse = ", "))
   }
 
-  # --- Early exit for amount model with no positive values ---
-  if (model_type == "amount" && isTRUE(skip_if_empty)) {
+  # --- Early exit when data are insufficient to fit the requested model ---
+  if (isTRUE(skip_if_empty)) {
     vals <- data[[intake_var]]
-    if (!any(vals > 0, na.rm = TRUE)) {
-      warning(sprintf(
-        "Skipping '%s' (model_type = \"amount\"): no positive intake values found. ",
-        intake_var
-      ), "Returning NULL.", call. = FALSE)
-      return(NULL)
+    subj  <- data[[subject_var]]
+    rpt   <- data[[repeat_var]]
+
+    if (model_type == "amount") {
+      if (!any(vals > 0, na.rm = TRUE)) {
+        warning(sprintf(
+          "Skipping '%s' (model_type = \"amount\"): no positive intake values found. ",
+          intake_var
+        ), "Returning NULL.", call. = FALSE)
+        return(NULL)
+      }
+    } else {
+      # Two-part models require at least one subject with 2+ positive recalls.
+      pos_recalls <- tapply(vals > 0 & !is.na(vals), subj, sum)
+      if (!any(pos_recalls >= 2, na.rm = TRUE)) {
+        warning(sprintf(
+          "Skipping '%s' (model_type = \"%s\"): no subjects have 2+ positive recalls. ",
+          intake_var, model_type
+        ), "Returning NULL.", call. = FALSE)
+        return(NULL)
+      }
     }
   }
 
@@ -264,7 +281,8 @@ prepare_mixtran_data <- function(data, intake_var, subject_var, repeat_var,
     pos_per_subject <- tapply(work$consumed, work$subject, sum)
     n_with_2pos <- sum(pos_per_subject >= 2, na.rm = TRUE)
     if (n_with_2pos == 0) {
-      stop("No subjects with 2+ positive recalls. Cannot fit two-part model.")
+      stop("No subjects with 2+ positive recalls. Cannot fit two-part model. ",
+           "Set skip_if_empty = TRUE to skip such variables silently.")
     }
     if (n_with_2pos <= 10) {
       warning("Only ", n_with_2pos, " subjects with 2+ positive recalls. ",
@@ -486,10 +504,18 @@ fit_amount_model <- function(prep, lambda, verbose, start = NULL) {
   pred_df$linpred <- stats::predict(fit, level = 0)  # population-level
   pred_df$ranef <- stats::predict(fit, level = 1) - pred_df$linpred  # subject-level RE
 
+  if (sigma2_b <= 0 || !is.finite(sigma2_b)) {
+    warning("Between-person variance (sigma2_b) is zero or non-finite; ",
+            "var_ratio set to Inf. Results may be unreliable (consider checking ",
+            "sample size and whether all subjects have the same intake).",
+            call. = FALSE)
+  }
+  var_ratio <- if (is.finite(sigma2_b) && sigma2_b > 0) sigma2_w / sigma2_b else Inf
+
   if (verbose) {
     message(sprintf("  Between-person variance (sigma2_b): %.4f", sigma2_b))
     message(sprintf("  Within-person variance  (sigma2_w): %.4f", sigma2_w))
-    message(sprintf("  Variance ratio (within/between):    %.2f", sigma2_w / sigma2_b))
+    message(sprintf("  Variance ratio (within/between):    %.2f", var_ratio))
     message(sprintf("  Fixed effects:"))
     for (nm in names(beta)) {
       message(sprintf("    %s: %.4f", nm, beta[nm]))
@@ -501,7 +527,7 @@ fit_amount_model <- function(prep, lambda, verbose, start = NULL) {
     beta = beta,
     sigma2_b = sigma2_b,
     sigma2_w = sigma2_w,
-    var_ratio = sigma2_w / sigma2_b,
+    var_ratio = var_ratio,
     predicted = pred_df,
     converged = TRUE
   )

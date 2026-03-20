@@ -104,3 +104,26 @@ test_that("two-part model errors without subjects having 2+ positive recalls", {
     regexp = "2\\+ positive recalls"
   )
 })
+
+test_that("skip_if_empty = TRUE returns NULL for two-part model with insufficient data", {
+  dat <- data.frame(
+    id     = 1:50,
+    day    = 1,
+    intake = stats::rnorm(50, 100, 10) * stats::rbinom(50, 1, 0.5),
+    stringsAsFactors = FALSE
+  )
+  result <- expect_warning(
+    mixtran(
+      data          = dat,
+      intake_var    = "intake",
+      subject_var   = "id",
+      repeat_var    = "day",
+      model_type    = "uncorr",
+      lambda        = 0.3,
+      skip_if_empty = TRUE,
+      verbose       = FALSE
+    ),
+    "2\\+ positive recalls"
+  )
+  expect_null(result)
+})
