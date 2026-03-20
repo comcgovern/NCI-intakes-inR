@@ -54,9 +54,17 @@ NULL
 #'   supplied, its fixed-effect estimates are used as starting values for the
 #'   optimiser, which can improve convergence speed and stability (useful in
 #'   BRR replicates or when re-fitting after a lambda update).
+#' @param skip_if_empty Logical (default `FALSE`). When `TRUE` and
+#'   `model_type = "amount"`, if the intake variable has no positive values
+#'   (all zeros or missing), `mixtran()` emits a warning and returns `NULL`
+#'   instead of stopping with an error. Useful when iterating over many foods
+#'   with `lapply()` or `purrr::map()` where some items may be entirely absent
+#'   in the sample (e.g., school-only foods in a general population dataset).
 #' @param verbose Print model fitting progress
 #' @return A `mixtran_fit` object containing parameter estimates, predicted
-#'   values, and diagnostics needed for the DISTRIB step.
+#'   values, and diagnostics needed for the DISTRIB step. Returns `NULL`
+#'   (with a warning) if `skip_if_empty = TRUE` and no positive intake values
+#'   are present.
 #' @export
 mixtran <- function(data,
                     intake_var,
@@ -74,6 +82,7 @@ mixtran <- function(data,
                     corr_engine = c("profile_rho", "ghq"),
                     ghq_n_nodes = 5L,
                     start = NULL,
+                    skip_if_empty = FALSE,
                     verbose = TRUE) {
 
   prob_engine <- match.arg(prob_engine)
@@ -94,6 +103,18 @@ mixtran <- function(data,
   missing_vars <- setdiff(required_vars, names(data))
   if (length(missing_vars) > 0) {
     stop("Variables not found in data: ", paste(missing_vars, collapse = ", "))
+  }
+
+  # --- Early exit for amount model with no positive values ---
+  if (model_type == "amount" && isTRUE(skip_if_empty)) {
+    vals <- data[[intake_var]]
+    if (!any(vals > 0, na.rm = TRUE)) {
+      warning(sprintf(
+        "Skipping '%s' (model_type = \"amount\"): no positive intake values found. ",
+        intake_var
+      ), "Returning NULL.", call. = FALSE)
+      return(NULL)
+    }
   }
 
   # --- Prepare data ---
@@ -213,7 +234,8 @@ prepare_mixtran_data <- function(data, intake_var, subject_var, repeat_var,
         min_pos <- min(work$intake[work$intake > 0], na.rm = TRUE)
         if (!is.finite(min_pos)) {
           stop("No positive intake values found for amount model. ",
-               "All observations are zero or missing; cannot fit amount model.")
+               "All observations are zero or missing; cannot fit amount model. ",
+               "Set skip_if_empty = TRUE to skip such variables silently.")
         }
         min_positive <- min_pos / 2
       }
