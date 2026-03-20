@@ -80,7 +80,7 @@ test_that("uncorrelated two-part model returns required fields", {
   expect_true(!is.null(fit$predicted))
 })
 
-test_that("two-part model errors without subjects having 2+ positive recalls", {
+test_that("two-part model returns NULL with warning when no subjects have 2+ positive recalls", {
   # All single-recall data with ubiquitous intake — no within-person info
   dat <- data.frame(
     id     = 1:50,
@@ -88,11 +88,14 @@ test_that("two-part model errors without subjects having 2+ positive recalls", {
     intake = stats::rnorm(50, 100, 10),
     stringsAsFactors = FALSE
   )
+
   # Make about half zeros (one recall per person — no repeated measures)
+  set.seed(99)
   dat$intake <- dat$intake * stats::rbinom(50, 1, 0.5)
-  # All subjects have exactly 1 recall → should fail with informative error
-  expect_error(
-    suppressMessages(mixtran(
+
+  # Default (skip_if_empty = TRUE): should warn and return NULL
+  result <- expect_warning(
+    mixtran(
       data       = dat,
       intake_var = "intake",
       subject_var = "id",
@@ -100,19 +103,13 @@ test_that("two-part model errors without subjects having 2+ positive recalls", {
       model_type  = "uncorr",
       lambda      = 0.3,
       verbose     = FALSE
-    )),
-    regexp = "2\\+ positive recalls"
+    ),
+    "2\\+ positive recalls"
   )
-})
+  expect_null(result)
 
-test_that("skip_if_empty = TRUE returns NULL for two-part model with insufficient data", {
-  dat <- data.frame(
-    id     = 1:50,
-    day    = 1,
-    intake = stats::rnorm(50, 100, 10) * stats::rbinom(50, 1, 0.5),
-    stringsAsFactors = FALSE
-  )
-  result <- expect_warning(
+  # skip_if_empty = FALSE: prepare_mixtran_data also returns NULL with warning
+  result2 <- expect_warning(
     mixtran(
       data          = dat,
       intake_var    = "intake",
@@ -120,10 +117,10 @@ test_that("skip_if_empty = TRUE returns NULL for two-part model with insufficien
       repeat_var    = "day",
       model_type    = "uncorr",
       lambda        = 0.3,
-      skip_if_empty = TRUE,
+      skip_if_empty = FALSE,
       verbose       = FALSE
     ),
     "2\\+ positive recalls"
   )
-  expect_null(result)
+  expect_null(result2)
 })

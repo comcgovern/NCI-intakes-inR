@@ -54,7 +54,7 @@ NULL
 #'   supplied, its fixed-effect estimates are used as starting values for the
 #'   optimiser, which can improve convergence speed and stability (useful in
 #'   BRR replicates or when re-fitting after a lambda update).
-#' @param skip_if_empty Logical (default `FALSE`). When `TRUE`, if the data
+#' @param skip_if_empty Logical (default `TRUE`). When `TRUE`, if the data
 #'   are insufficient to fit the requested model, `mixtran()` emits a warning
 #'   and returns `NULL` instead of stopping with an error. For
 #'   `model_type = "amount"` this triggers when there are no positive intake
@@ -84,7 +84,7 @@ mixtran <- function(data,
                     corr_engine = c("profile_rho", "ghq"),
                     ghq_n_nodes = 5L,
                     start = NULL,
-                    skip_if_empty = FALSE,
+                    skip_if_empty = TRUE,
                     verbose = TRUE) {
 
   prob_engine <- match.arg(prob_engine)
@@ -146,6 +146,9 @@ mixtran <- function(data,
     min_positive = min_positive,
     model_type = model_type
   )
+
+  # prepare_mixtran_data() returns NULL when data are insufficient
+  if (is.null(prep)) return(NULL)
 
   # --- Find optimal lambda if not provided ---
   if (is.null(lambda)) {
@@ -250,9 +253,10 @@ prepare_mixtran_data <- function(data, intake_var, subject_var, repeat_var,
       if (is.null(min_positive)) {
         min_pos <- min(work$intake[work$intake > 0], na.rm = TRUE)
         if (!is.finite(min_pos)) {
-          stop("No positive intake values found for amount model. ",
-               "All observations are zero or missing; cannot fit amount model. ",
-               "Set skip_if_empty = TRUE to skip such variables silently.")
+          warning("No positive intake values found for amount model. ",
+                  "All observations are zero or missing; returning NULL.",
+                  call. = FALSE)
+          return(NULL)
         }
         min_positive <- min_pos / 2
       }
@@ -281,8 +285,9 @@ prepare_mixtran_data <- function(data, intake_var, subject_var, repeat_var,
     pos_per_subject <- tapply(work$consumed, work$subject, sum)
     n_with_2pos <- sum(pos_per_subject >= 2, na.rm = TRUE)
     if (n_with_2pos == 0) {
-      stop("No subjects with 2+ positive recalls. Cannot fit two-part model. ",
-           "Set skip_if_empty = TRUE to skip such variables silently.")
+      warning("No subjects with 2+ positive recalls. Cannot fit two-part model. ",
+              "Returning NULL.", call. = FALSE)
+      return(NULL)
     }
     if (n_with_2pos <= 10) {
       warning("Only ", n_with_2pos, " subjects with 2+ positive recalls. ",
