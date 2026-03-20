@@ -283,24 +283,29 @@ drop_constant_covs <- function(cov_names, data) {
   nlme_has_start <- "start" %in% names(formals(nlme::lme))
   use_start <- !is.null(start) && nlme_has_start
 
-  # Helper: call nlme::lme() directly (NOT via do.call) to avoid scoping
-  # issues where nlme's internal match.call()/eval() chain fails to find
-  # functions in the correct namespace (manifests as "could not find function
-  # 'base_lme'" or similar errors).
+  # Helper: call lme() (imported from nlme via NAMESPACE import(nlme)) directly.
+  # Using the unqualified name `lme` rather than `nlme::lme` is critical: when
+  # nlme's internal code re-evaluates the match.call() result (e.g. inside
+  # update.lme() for returnObject=TRUE recovery or ML/REML switching), it looks
+  # up the function symbol in parent.frame().  The `::` compound expression
+  # `nlme::lme` can fail to resolve in that frame on some nlme versions,
+  # producing "could not find function 'base_lme'" or similar errors.  The plain
+  # symbol `lme` is always resolvable because nciusual imports the full nlme
+  # namespace (import(nlme) in NAMESPACE).
   call_lme <- function(ctl) {
     if (use_start && !is.null(weights)) {
-      nlme::lme(fixed = fixed, random = random, data = data,
-                method = method, weights = weights, start = start,
-                control = ctl)
+      lme(fixed = fixed, random = random, data = data,
+          method = method, weights = weights, start = start,
+          control = ctl)
     } else if (use_start) {
-      nlme::lme(fixed = fixed, random = random, data = data,
-                method = method, start = start, control = ctl)
+      lme(fixed = fixed, random = random, data = data,
+          method = method, start = start, control = ctl)
     } else if (!is.null(weights)) {
-      nlme::lme(fixed = fixed, random = random, data = data,
-                method = method, weights = weights, control = ctl)
+      lme(fixed = fixed, random = random, data = data,
+          method = method, weights = weights, control = ctl)
     } else {
-      nlme::lme(fixed = fixed, random = random, data = data,
-                method = method, control = ctl)
+      lme(fixed = fixed, random = random, data = data,
+          method = method, control = ctl)
     }
   }
 
