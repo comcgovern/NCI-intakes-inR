@@ -283,26 +283,25 @@ drop_constant_covs <- function(cov_names, data) {
   nlme_has_start <- "start" %in% names(formals(nlme::lme))
   use_start <- !is.null(start) && nlme_has_start
 
-  # Helper: call lme() in an environment whose parent is nlme's namespace.
+  # Helper: call lme() from a function whose enclosing environment is
+  # parented by nlme's namespace.
   #
   # WHY THIS IS NECESSARY:
   # nlme's lme.formula() captures the call via match.call() and later
-  # re-evaluates it with eval(Call, parent.frame()) -- for instance when
-  # returnObject = TRUE triggers recovery, or during ML/REML switching.
-  # That eval looks up ALL function symbols (including nlme-internal helpers
-  # like base_lme, MEdecomp, etc.) starting from the caller's frame.
+  # re-evaluates it with eval(Call, parent.frame()).  parent.frame()
+  # returns the *call frame* of the caller — and R's eval(expr, envir)
+  # does NOT change what parent.frame() returns.  So the previous approach
+  # of eval(cl, envir = <nlme-parented env>) failed: parent.frame()
+  # still returned call_lme's frame (in nciusual's namespace), which
+  # lacks nlme's unexported helpers like base_lme.
   #
-  # When lme() is called from a package that merely imports nlme, the
-  # caller's frame is the package namespace -- which does NOT include nlme's
-  # unexported functions.  This produces errors like:
-  #   "could not find function 'base_lme'"
-  #
-  # The fix: build a small environment holding the call arguments, parented
-  # by asNamespace("nlme").  Evaluating the lme() call inside that
-  # environment ensures that parent.frame() from within lme.formula() can
-  # walk up to the nlme namespace and find every internal helper it needs.
+  # The fix: create an actual *function* whose enclosing environment is
+  # parented by asNamespace("nlme"), then call it.  Now parent.frame()
+  # from within lme.formula() → lme() generic → this wrapper function,
+  # and symbol lookups walk: wrapper's frame → wrapper_env → nlme NS,
+  # which contains all unexported helpers.
   call_lme <- function(ctl) {
-    # Collect arguments into a temporary environment parented by nlme's NS
+    # Collect arguments into an environment parented by nlme's namespace
     args <- list(
       fixed   = fixed,
       random  = random,
@@ -313,16 +312,21 @@ drop_constant_covs <- function(cov_names, data) {
     if (use_start)          args$start   <- start
     if (!is.null(weights))  args$weights <- weights
 
-    env <- list2env(args, parent = asNamespace("nlme"))
+    wrapper_env <- list2env(args, parent = asNamespace("nlme"))
 
-    # Build a quoted lme() call with the exact argument names present
+    # Build a function whose body is lme(fixed=fixed, random=random, ...)
+    # and whose enclosing environment is wrapper_env.  Calling this function
+    # makes parent.frame() from within lme.formula() resolve through
+    # wrapper_env → asNamespace("nlme"), finding all internal helpers.
     arg_names <- names(args)
-    cl <- as.call(c(
+    call_expr <- as.call(c(
       quote(lme),
       stats::setNames(lapply(arg_names, as.symbol), arg_names)
     ))
-
-    eval(cl, envir = env)
+    wrapper <- function() {}
+    body(wrapper) <- call_expr
+    environment(wrapper) <- wrapper_env
+    wrapper()
   }
 
   ctl_optim <- nlme::lmeControl(
