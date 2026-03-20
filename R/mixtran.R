@@ -283,30 +283,46 @@ drop_constant_covs <- function(cov_names, data) {
   nlme_has_start <- "start" %in% names(formals(nlme::lme))
   use_start <- !is.null(start) && nlme_has_start
 
-  # Helper: call lme() (imported from nlme via NAMESPACE import(nlme)) directly.
-  # Using the unqualified name `lme` rather than `nlme::lme` is critical: when
-  # nlme's internal code re-evaluates the match.call() result (e.g. inside
-  # update.lme() for returnObject=TRUE recovery or ML/REML switching), it looks
-  # up the function symbol in parent.frame().  The `::` compound expression
-  # `nlme::lme` can fail to resolve in that frame on some nlme versions,
-  # producing "could not find function 'base_lme'" or similar errors.  The plain
-  # symbol `lme` is always resolvable because nciusual imports the full nlme
-  # namespace (import(nlme) in NAMESPACE).
+  # Helper: call lme() in an environment whose parent is nlme's namespace.
+  #
+  # WHY THIS IS NECESSARY:
+  # nlme's lme.formula() captures the call via match.call() and later
+  # re-evaluates it with eval(Call, parent.frame()) -- for instance when
+  # returnObject = TRUE triggers recovery, or during ML/REML switching.
+  # That eval looks up ALL function symbols (including nlme-internal helpers
+  # like base_lme, MEdecomp, etc.) starting from the caller's frame.
+  #
+  # When lme() is called from a package that merely imports nlme, the
+  # caller's frame is the package namespace -- which does NOT include nlme's
+  # unexported functions.  This produces errors like:
+  #   "could not find function 'base_lme'"
+  #
+  # The fix: build a small environment holding the call arguments, parented
+  # by asNamespace("nlme").  Evaluating the lme() call inside that
+  # environment ensures that parent.frame() from within lme.formula() can
+  # walk up to the nlme namespace and find every internal helper it needs.
   call_lme <- function(ctl) {
-    if (use_start && !is.null(weights)) {
-      lme(fixed = fixed, random = random, data = data,
-          method = method, weights = weights, start = start,
-          control = ctl)
-    } else if (use_start) {
-      lme(fixed = fixed, random = random, data = data,
-          method = method, start = start, control = ctl)
-    } else if (!is.null(weights)) {
-      lme(fixed = fixed, random = random, data = data,
-          method = method, weights = weights, control = ctl)
-    } else {
-      lme(fixed = fixed, random = random, data = data,
-          method = method, control = ctl)
-    }
+    # Collect arguments into a temporary environment parented by nlme's NS
+    args <- list(
+      fixed   = fixed,
+      random  = random,
+      data    = data,
+      method  = method,
+      control = ctl
+    )
+    if (use_start)          args$start   <- start
+    if (!is.null(weights))  args$weights <- weights
+
+    env <- list2env(args, parent = asNamespace("nlme"))
+
+    # Build a quoted lme() call with the exact argument names present
+    arg_names <- names(args)
+    cl <- as.call(c(
+      quote(lme),
+      stats::setNames(lapply(arg_names, as.symbol), arg_names)
+    ))
+
+    eval(cl, envir = env)
   }
 
   ctl_optim <- nlme::lmeControl(
