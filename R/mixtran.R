@@ -293,8 +293,16 @@ drop_constant_covs <- function(cov_names, data) {
         ctl_nlminb <- nlme::lmeControl(
           maxIter = 500, msMaxIter = 500, opt = "nlminb", returnObject = TRUE
         )
-        nlme::lme(fixed = fixed, random = random, data = data, method = method,
-                  start = start, weights = weights, control = ctl_nlminb)
+        tryCatch(
+          nlme::lme(fixed = fixed, random = random, data = data, method = method,
+                    start = start, weights = weights, control = ctl_nlminb),
+          error = function(e2) {
+            stop(sprintf(
+              "nlme::lme() failed with both optim and nlminb (method = %s): %s",
+              method, conditionMessage(e2)
+            ))
+          }
+        )
       } else {
         stop(e)
       }
@@ -359,9 +367,17 @@ fit_amount_model <- function(prep, lambda, verbose, start = NULL) {
   }, error = function(e) {
     # Fall back to ML if REML fails for any other reason
     if (verbose) message("  REML failed, trying ML...")
-    .lme_robust(
-      fixed = fixed_formula, random = ~ 1 | subject, data = work,
-      method = "ML", start = NULL, weights = wts, verbose = verbose
+    tryCatch(
+      .lme_robust(
+        fixed = fixed_formula, random = ~ 1 | subject, data = work,
+        method = "ML", start = NULL, weights = wts, verbose = verbose
+      ),
+      error = function(e2) {
+        stop(sprintf(
+          "nlme::lme() failed for both REML and ML in fit_amount_model(): %s",
+          conditionMessage(e2)
+        ))
+      }
     )
   })
 
@@ -560,9 +576,17 @@ fit_twopart_uncorr <- function(prep, lambda, verbose,
     )
   }, error = function(e) {
     if (verbose) message("    Amount model REML failed, trying ML...")
-    .lme_robust(
-      fixed = amt_formula, random = ~ 1 | subject, data = work_pos,
-      method = "ML", start = NULL, weights = amt_wts, verbose = verbose
+    tryCatch(
+      .lme_robust(
+        fixed = amt_formula, random = ~ 1 | subject, data = work_pos,
+        method = "ML", start = NULL, weights = amt_wts, verbose = verbose
+      ),
+      error = function(e2) {
+        stop(sprintf(
+          "nlme::lme() failed for both REML and ML in fit_twopart_uncorr() amount sub-model: %s",
+          conditionMessage(e2)
+        ))
+      }
     )
   })
 
