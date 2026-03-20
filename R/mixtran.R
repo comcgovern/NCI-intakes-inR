@@ -211,6 +211,10 @@ prepare_mixtran_data <- function(data, intake_var, subject_var, repeat_var,
     if (any(work$intake == 0, na.rm = TRUE)) {
       if (is.null(min_positive)) {
         min_pos <- min(work$intake[work$intake > 0], na.rm = TRUE)
+        if (!is.finite(min_pos)) {
+          stop("No positive intake values found for amount model. ",
+               "All observations are zero or missing; cannot fit amount model.")
+        }
         min_positive <- min_pos / 2
       }
       message(sprintf("  Replacing %d zero values with %.4f (half-min)",
