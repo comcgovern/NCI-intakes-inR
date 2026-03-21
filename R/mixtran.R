@@ -872,7 +872,7 @@ fit_twopart_corr <- function(prep, lambda, verbose,
   # is NA the glmmPQL/glmer fit did not converge (likely quasi-complete
   # separation or a boundary variance estimate). Continuing would make r1 all
   # zeros after NA replacement and corrupt the profile likelihood.
-  if (length(prob_re_named) > 0L && all(is.na(prob_re_named))) {
+  if (length(prob_re_named) == 0L || all(is.na(prob_re_named))) {
     warning(
       "The probability sub-model returned all-NA random effects, indicating ",
       "it failed to converge (e.g. quasi-complete separation or a boundary ",
@@ -893,7 +893,12 @@ fit_twopart_corr <- function(prep, lambda, verbose,
   }, error = function(e) setNames(rep(0, length(all_subjects)), all_subjects))
 
   # Build aligned vectors (never-consumers get amt_re = 0)
-  prob_re <- as.numeric(prob_re_named[all_subjects])
+  prob_re <- numeric(length(all_subjects))
+  names(prob_re) <- all_subjects
+  common_prob <- intersect(all_subjects, names(prob_re_named))
+  if (length(common_prob) > 0) {
+    prob_re[common_prob] <- prob_re_named[common_prob]
+  }
   amt_re  <- numeric(length(all_subjects))
   names(amt_re) <- all_subjects
   common_subjects <- intersect(all_subjects, names(amt_re_named))
