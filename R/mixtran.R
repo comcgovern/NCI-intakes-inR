@@ -124,13 +124,41 @@ mixtran <- function(data,
     } else {
       # Two-part models require at least one subject with 2+ positive recalls.
       pos_recalls <- tapply(vals > 0 & !is.na(vals), subj, sum)
-      if (!any(pos_recalls >= 2, na.rm = TRUE)) {
+      n_paired_pos <- sum(pos_recalls >= 2, na.rm = TRUE)
+      if (n_paired_pos == 0L) {
         warning(sprintf(
           "Skipping '%s' (model_type = \"%s\"): no subjects have 2+ positive recalls. ",
           intake_var, model_type
         ), "Returning NULL.", call. = FALSE)
         return(NULL)
       }
+      # Correlated model needs enough paired positive observations to estimate
+      # the between-effects correlation. With fewer than 10 such subjects the
+      # profile likelihood is unreliable and fit_twopart_corr() would fall back
+      # to rho = 0 anyway, but only after emitting a confusing "degenerate
+      # residuals" message. Return NULL early with a clear explanation.
+      if (model_type == "corr" && n_paired_pos < 10L) {
+        warning(sprintf(
+          "Skipping '%s' (model_type = \"corr\"): only %d subject(s) have positive intake on 2+ recall days (need >=10 to estimate correlation). Consider model_type = \"uncorr\".",
+          intake_var, n_paired_pos
+        ), " Returning NULL.", call. = FALSE)
+        return(NULL)
+      }
+    }
+  }
+
+  # --- Diagnostic: two-part model inappropriate for nearly ubiquitous foods ---
+  # When >90% of person-days have positive intake the probability sub-model is
+  # poorly identified (near-constant binary outcome), and the usual-intake
+  # distribution is better captured by an amount-only model. We do not
+  # auto-switch — just inform the user.
+  if (model_type %in% c("corr", "uncorr")) {
+    pct_pos <- mean(data[[intake_var]] > 0, na.rm = TRUE)
+    if (pct_pos > 0.9) {
+      message(sprintf(
+        "Note: %.0f%% of person-days have positive '%s' intake. For nearly ubiquitous foods the two-part model may be inappropriate; model_type = \"amount\" is likely more suitable.",
+        pct_pos * 100, intake_var
+      ))
     }
   }
 
@@ -839,6 +867,26 @@ fit_twopart_corr <- function(prep, lambda, verbose,
     prob_ranef(uncorr$prob_fit),
     error = function(e) setNames(rep(0, length(all_subjects)), all_subjects)
   )
+
+  # Detect total failure of the probability sub-model: if every random effect
+  # is NA the glmmPQL/glmer fit did not converge (likely quasi-complete
+  # separation or a boundary variance estimate). Continuing would make r1 all
+  # zeros after NA replacement and corrupt the profile likelihood.
+  if (length(prob_re_named) > 0L && all(is.na(prob_re_named))) {
+    warning(
+      "The probability sub-model returned all-NA random effects, indicating ",
+      "it failed to converge (e.g. quasi-complete separation or a boundary ",
+      "variance estimate). If the proportion of non-zero observations is very ",
+      "high or very low for a two-part model, consider model_type = \"amount\" ",
+      "(for nearly ubiquitous foods) or verify that the food is truly episodic.",
+      call. = FALSE
+    )
+    uncorr$rho <- 0
+    uncorr$rho_profile <- data.frame(rho = numeric(0), loglik = numeric(0))
+    uncorr$convergence_warning <- "prob_model_all_na_ranef"
+    return(uncorr)
+  }
+
   amt_re_named <- tryCatch({
     re_df <- nlme::ranef(uncorr$amt_fit)[[1]]
     setNames(as.numeric(re_df[[1]]), rownames(re_df))
