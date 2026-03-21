@@ -208,8 +208,6 @@ nciusual/
 │   ├── bivariate.R          # Bivariate usual intake and ratio estimation
 │   ├── quadrature.R         # GH quadrature utilities (nodes/weights/adaptive)
 │   └── print_methods.R      # print/summary/plot methods
-├── src/
-│   └── ghq_loglik.cpp       # Rcpp C++ GHQ inner loop (activatable stub)
 └── tests/testthat/
     ├── test-amount-model.R
     ├── test-boxcox.R
@@ -219,6 +217,7 @@ nciusual/
     ├── test-glmer-engine.R
     ├── test-indivint.R
     ├── test-bivariate.R
+    ├── test-nhanes-helpers.R
     ├── test-twopart-corr.R
     └── test-twopart-uncorr.R
 ```
@@ -256,6 +255,39 @@ testthat::test_dir("tests/testthat")
 | NHANES BRR weight generation | `survey` package wrapper | Full |
 | Multi-cycle weight pooling | `combine_nhanes_cycles()` | Full |
 | Bivariate usual intake | `distrib_bivariate()` | Implemented |
+
+## Changelog
+
+### v0.4.0 (2026-03-21)
+
+**Robustness and compatibility improvements**
+
+- **Pure R implementation** — removed Rcpp/C++ dependency; the GHQ inner loop is now implemented entirely in R, eliminating the need for Rtools/a C compiler on any platform.
+- **`skip_if_empty` parameter** — `mixtran()` gains `skip_if_empty` (default `TRUE`) for graceful handling of dietary components with all-zero or missing intake values, returning `NULL` instead of stopping.
+- **nlme compatibility fixes** — resolved a series of `base_lme`/namespace resolution errors when calling `nlme::lme()` across different nlme versions; the package now uses a wrapper approach that is robust to `match.call()` internals.
+- **Degenerate model handling** — `mixtran()` now guards against degenerate two-part (corr/uncorr) fits (singular variance, constant covariates, MEEM errors) with informative warnings rather than hard stops.
+- **`subgroup_var` carry-through** — fixed a bug in `distrib()` where the subgroup variable was not correctly merged into predicted usual intakes for subgroup-stratified analyses.
+- **Empty random-effect vectors** — fixed a crash when `prob_re` vectors are empty or subject names are misaligned in two-part model predictions.
+- **Profile-ρ boundary fix** — corrected profile likelihood degeneracy that produced ρ estimates at the grid boundary (±1) for near-degenerate correlated models.
+- **New test coverage** — added `tests/testthat/test-nhanes-helpers.R` covering NHANES BRR weight generation and multi-cycle pooling utilities.
+
+### v0.3.0
+
+- GHQ engine for correlated two-part model (`corr_engine = "ghq"`)
+- Bivariate usual intake and ratio estimation (`distrib_bivariate()`)
+- Adaptive Gauss-Hermite quadrature utilities (`gh_nodes_adaptive()`)
+- Vectorized DISTRIB Monte Carlo simulation
+
+### v0.2.0
+
+- `glmer` probability sub-model engine (`prob_engine = "glmer"`)
+- Individual BLUP predictions (`indivint()`)
+- Warm-starting via `start` parameter in `mixtran()`
+- Multi-cycle NHANES weight pooling (`combine_nhanes_cycles()`)
+
+### v0.1.0
+
+- Initial release: `mixtran()`, `distrib()`, `brr_usual_intake()` for amount-only and uncorrelated two-part models
 
 ## References
 
