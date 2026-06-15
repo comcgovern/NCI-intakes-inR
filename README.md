@@ -240,6 +240,27 @@ Run the full test suite:
 testthat::test_dir("tests/testthat")
 ```
 
+### Parity against analytic ground truth
+
+Because the proprietary NCI SAS macros cannot be run in this project's CI, the
+package is validated against **analytic ground truth** rather than against
+another estimator. Fixed synthetic recall datasets are generated from *known*
+parameters, and the true usual-intake distribution they imply is computed
+independently by large-sample (4×10⁶) Monte Carlo. A correct SAS
+MIXTRAN/DISTRIB run would be estimating this same target, so recovering it
+within sampling/method error is the meaningful parity check.
+
+- Reference generator: [`data-raw/generate_reference.R`](data-raw/generate_reference.R)
+- Frozen datasets + reference values: `tests/testthat/fixtures/`
+- Parity tests: `tests/testthat/test-parity-reference.R`
+
+Observed recovery on the reference fixtures: the amount-only model matches the
+true distribution to ≤2%, the uncorrelated two-part model to ≤4%; the
+correlated two-part model recovers central statistics well but its extreme
+lower-tail percentiles are approximate (a known limitation of the profile-ρ /
+GHQ engines), so those are checked loosely.
+
+
 ## SAS Macro Parity
 
 | SAS Macro Feature | R Implementation | Status |
