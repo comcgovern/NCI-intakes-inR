@@ -258,6 +258,33 @@ testthat::test_dir("tests/testthat")
 
 ## Changelog
 
+### v0.4.1 (2026-06-15)
+
+**Correctness fixes (code audit)**
+
+- **Random-effect extraction bug (major)** — `nlme::ranef(fit)[[1]]` was
+  collapsing the per-subject random-effect vector to a single unnamed value,
+  so every subject lookup missed. This silently broke three features:
+  - the correlated two-part model (`corr_engine = "profile_rho"`) always fell
+    back to `rho = 0`, regardless of the true correlation;
+  - two-part `indivint()` returned the population-level prediction for *every*
+    subject (the BLUP step was inert);
+  - bivariate `cross_rho` was always estimated as 0.
+
+  All three now recover the intended quantities. Added regression tests that
+  assert non-degenerate `rho`, per-subject variation in `indivint()`
+  predictions, and positive `cross_rho` for correlated components.
+- **Weighted quantile convention** — `weighted_quantiles()` switched from a
+  right-edge cumulative-weight convention (which biased DISTRIB percentiles
+  downward) to the midpoint/Hazen convention, so equal-weight percentiles now
+  match base R `quantile(..., type = 5)`.
+- **`plot.distrib_result()`** — replaced the invalid colour name `"teal"`
+  (which errored for exactly 7 subgroups) with `"darkcyan"`.
+- **Gauss-Hermite tables** — added the previously missing precomputed node/
+  weight tables for `n = 5` (the default) and `n = 9`, avoiding a repeated
+  eigendecomposition inside the GHQ likelihood loop; removed dead code in
+  `gh_nodes_adaptive()`.
+
 ### v0.4.0 (2026-03-21)
 
 **Robustness and compatibility improvements**

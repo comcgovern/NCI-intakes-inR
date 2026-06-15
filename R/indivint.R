@@ -150,7 +150,7 @@ indivint <- function(mixtran_obj, zero_seq = TRUE, zero_weekend = TRUE) {
   )
 
   # Subject-level RE from amount model (named by subject ID)
-  v2_re_df <- nlme::ranef(amt_fit)[[1]]  # data frame: rows=subjects
+  v2_re_df <- nlme::ranef(amt_fit)       # data frame: rows=subjects
   v2_re    <- setNames(as.numeric(v2_re_df[[1]]), rownames(v2_re_df))
 
   # Population-mean transformed amount (for subjects who never consumed)

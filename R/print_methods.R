@@ -245,7 +245,7 @@ plot.distrib_result <- function(x, which = 1:2, ...) {
   # Colour palette
   pal <- if (n_grps <= 8) {
     c("steelblue", "tomato", "mediumseagreen", "goldenrod",
-      "mediumpurple", "coral", "teal", "sienna")[seq_len(n_grps)]
+      "mediumpurple", "coral", "darkcyan", "sienna")[seq_len(n_grps)]
   } else {
     grDevices::rainbow(n_grps)
   }

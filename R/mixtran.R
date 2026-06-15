@@ -798,7 +798,7 @@ prob_ranef <- function(prob_fit) {
     re <- lme4::ranef(prob_fit)$subject  # data frame, 1 col per RE term
     setNames(as.numeric(re[[1]]), rownames(re))
   } else {
-    re <- nlme::ranef(prob_fit)[[1]]     # data frame, 1 col ("(Intercept)")
+    re <- nlme::ranef(prob_fit)          # data frame, 1 col ("(Intercept)")
     setNames(as.numeric(re[[1]]), rownames(re))
   }
 }
@@ -888,7 +888,7 @@ fit_twopart_corr <- function(prep, lambda, verbose,
   }
 
   amt_re_named <- tryCatch({
-    re_df <- nlme::ranef(uncorr$amt_fit)[[1]]
+    re_df <- nlme::ranef(uncorr$amt_fit)
     setNames(as.numeric(re_df[[1]]), rownames(re_df))
   }, error = function(e) setNames(rep(0, length(all_subjects)), all_subjects))
 

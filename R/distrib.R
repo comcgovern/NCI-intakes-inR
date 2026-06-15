@@ -384,7 +384,12 @@ weighted_quantiles <- function(x, w, probs) {
     w <- rep(1, length(w))
     sw <- length(w)
   }
-  cw <- cumsum(w) / sw
+  # Plotting positions use the midpoint (Hazen) convention:
+  # observation k carries cumulative probability (S_k - w_k/2) / S, where
+  # S_k = cumsum(w). For equal weights this reduces to (k - 0.5)/n, so the
+  # interpolated quantiles match base R's quantile() (e.g. median of 1:5 = 3).
+  # The previous right-edge convention (cumsum(w)/sw) biased percentiles low.
+  cw <- (cumsum(w) - w / 2) / sw
 
   vapply(probs, function(p) {
     if (p <= cw[1]) return(x[1])
