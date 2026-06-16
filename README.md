@@ -255,10 +255,12 @@ within sampling/method error is the meaningful parity check.
 - Parity tests: `tests/testthat/test-parity-reference.R`
 
 Observed recovery on the reference fixtures: the amount-only model matches the
-true distribution to ≤2%, the uncorrelated two-part model to ≤4%; the
-correlated two-part model recovers central statistics well but its extreme
-lower-tail percentiles are approximate (a known limitation of the profile-ρ /
-GHQ engines), so those are checked loosely.
+true distribution to ≤2%, the uncorrelated two-part model to ≤4%, and the
+correlated two-part model via `corr_engine = "ghq"` to ≤3% across the whole
+distribution (including the lower tail, thanks to the joint intercept
+bias-correction). The faster `profile_rho` engine recovers central statistics
+well but leaves the lower-tail percentiles approximate, so those are checked
+loosely.
 
 
 ## SAS Macro Parity
@@ -267,7 +269,7 @@ GHQ engines), so those are checked loosely.
 |---|---|---|
 | MIXTRAN amount-only model | `nlme::lme` | Full |
 | MIXTRAN uncorrelated two-part | `glmmPQL`/`glmer` + `lme` | Approximate (PQL) / Full (glmer) |
-| MIXTRAN correlated two-part | Profile-ρ or GHQ | Approximate / Improved |
+| MIXTRAN correlated two-part | Profile-ρ or GHQ | Approximate / Full (GHQ, intercept-bias-corrected) |
 | MIXTRAN Box-Cox lambda search | Profile likelihood grid | Full |
 | DISTRIB Monte Carlo simulation | Vectorized R | Full |
 | DISTRIB weighted percentiles/means | Custom weighted quantile | Full |
@@ -305,6 +307,19 @@ GHQ engines), so those are checked loosely.
   weight tables for `n = 5` (the default) and `n = 9`, avoiding a repeated
   eigendecomposition inside the GHQ likelihood loop; removed dead code in
   `gh_nodes_adaptive()`.
+
+**Accuracy improvement**
+
+- **GHQ correlated engine now bias-corrects the intercepts** — the amount
+  sub-model is fit on consumed days only, so under positive ρ those days
+  over-represent high-amount subjects and the consumers-only intercept is
+  biased upward; the previous engines left it uncorrected, inflating the
+  lower-tail percentiles of the correlated two-part usual-intake distribution
+  by 20–40% against analytic ground truth. The `corr_engine = "ghq"` path now
+  estimates the probability/amount intercept shifts jointly with the variance
+  components and ρ (NLMIXED-style), recovering the *full* distribution —
+  including the lower tail — to within ~3%. The faster `profile_rho` default
+  remains approximate in the tail; use `"ghq"` when tail accuracy matters.
 
 ### v0.4.0 (2026-03-21)
 

@@ -39,10 +39,15 @@ NULL
 #'   (`model_type = "corr"` only). `"profile_rho"` (default) uses profile
 #'   likelihood over a grid of ρ values — fast and robust, but approximate.
 #'   `"ghq"` uses Gauss-Hermite quadrature to integrate out the bivariate
-#'   random effects and optimises over (σ²_v1, σ²_v2, σ²_e, ρ) jointly,
-#'   providing more accurate variance component and ρ estimates at the cost
-#'   of additional computation. The number of quadrature nodes is controlled
-#'   by `ghq_n_nodes`.
+#'   random effects and optimises over (σ²_v1, σ²_v2, σ²_e, ρ) **and the
+#'   probability/amount intercept shifts** jointly. Freeing the intercepts
+#'   corrects the selection bias that arises because the amount sub-model is
+#'   fit on consumed days only: under positive ρ those days over-represent
+#'   high-amount subjects, biasing the consumers-only intercept upward. This
+#'   yields accurate variance component, ρ, and (critically) lower-tail
+#'   percentile estimates at the cost of additional computation. The number
+#'   of quadrature nodes is controlled by `ghq_n_nodes`. (Covariate slopes
+#'   are held at the uncorrelated estimates; only the intercepts are freed.)
 #' @param ghq_n_nodes Number of Gauss-Hermite quadrature nodes per dimension
 #'   when `corr_engine = "ghq"`. Total bivariate nodes = `ghq_n_nodes^2`.
 #'   Supported values: 3, 5 (default), 7, 9. Larger values are more accurate
@@ -1088,7 +1093,16 @@ fit_twopart_corr_ghq <- function(prep, lambda, verbose,
   consumed <- work$consumed
 
   # --- Step 2: marginal log-likelihood via GHQ ---
-  ghq_loglik <- function(log_sv1, log_sv2, log_se, atanh_rho) {
+  #
+  # The probability and amount intercept shifts (d_alpha, d_beta) are estimated
+  # jointly with the variance components and rho. This corrects the selection
+  # bias in the amount sub-model: because the uncorrelated amount fit uses only
+  # consumed days, a positive rho makes those days over-represent high-amount
+  # subjects, biasing the consumers-only intercept upward. Freeing the
+  # intercepts inside the bivariate marginal likelihood recovers the unbiased
+  # NLMIXED-style estimate (covariate slopes remain at the uncorr values).
+  ghq_loglik <- function(log_sv1, log_sv2, log_se, atanh_rho,
+                         d_alpha = 0, d_beta = 0) {
     sigma_v1 <- exp(log_sv1)
     sigma_v2 <- exp(log_sv2)
     sigma_e  <- exp(log_se)
@@ -1105,7 +1119,7 @@ fit_twopart_corr_ghq <- function(prep, lambda, verbose,
       v2_q <- nodes_biv$v2[q]
 
       # Probability contributions (all observations)
-      eta_q <- eta_pop + v1_q
+      eta_q <- eta_pop + d_alpha + v1_q
       log_p <- ifelse(consumed == 1L,
                       stats::plogis(eta_q, log.p = TRUE),
                       stats::plogis(eta_q, log.p = TRUE, lower.tail = FALSE))
@@ -1114,7 +1128,7 @@ fit_twopart_corr_ghq <- function(prep, lambda, verbose,
       # Amount contributions (positive observations only)
       log_amt_subj <- numeric(n_subj)
       if (length(t_y_pos) > 0L) {
-        log_f <- stats::dnorm(t_y_pos, mean = mu_pop + v2_q,
+        log_f <- stats::dnorm(t_y_pos, mean = mu_pop + d_beta + v2_q,
                               sd = sigma_e, log = TRUE) +
                  (lambda - 1) * log_y_pos
         amt_by_subj <- tapply(log_f, person_id_pos, sum)
@@ -1133,7 +1147,7 @@ fit_twopart_corr_ghq <- function(prep, lambda, verbose,
     sum(log_marg)
   }
 
-  # --- Step 3: optimise variance components + rho ---
+  # --- Step 3: optimise variance components + rho + intercept shifts ---
   if (verbose) message("  Step 2: Optimising variance components via GHQ...")
 
   # Starting values from uncorr fit (or prior start if supplied)
@@ -1149,21 +1163,23 @@ fit_twopart_corr_ghq <- function(prep, lambda, verbose,
     se_init  <- log(sqrt(uncorr$sigma2_e))
     rho_init <- atanh(0)
   }
+  # Intercept shifts start at 0 (i.e. the uncorrelated estimate)
+  par_init <- c(sv1_init, sv2_init, se_init, rho_init, 0, 0)
 
   neg_ll <- function(par) {
     tryCatch(
-      -ghq_loglik(par[1], par[2], par[3], par[4]),
+      -ghq_loglik(par[1], par[2], par[3], par[4], par[5], par[6]),
       error = function(e) 1e10
     )
   }
 
   opt <- tryCatch(
     stats::optim(
-      par     = c(sv1_init, sv2_init, se_init, rho_init),
+      par     = par_init,
       fn      = neg_ll,
       method  = "L-BFGS-B",
-      lower   = c(-6, -6, -6, -4),
-      upper   = c( 6,  6,  6,  4),
+      lower   = c(-6, -6, -6, -4, -3, -3),
+      upper   = c( 6,  6,  6,  4,  3,  3),
       control = list(maxit = 300, factr = 1e8)
     ),
     error = function(e) {
@@ -1171,7 +1187,7 @@ fit_twopart_corr_ghq <- function(prep, lambda, verbose,
                            "); retrying with Nelder-Mead...")
       tryCatch(
         stats::optim(
-          par     = c(sv1_init, sv2_init, se_init, rho_init),
+          par     = par_init,
           fn      = neg_ll,
           method  = "Nelder-Mead",
           control = list(maxit = 1000, reltol = 1e-6)
@@ -1191,10 +1207,33 @@ fit_twopart_corr_ghq <- function(prep, lambda, verbose,
   p       <- opt$par
   sigma_v1 <- exp(p[1]);  sigma_v2 <- exp(p[2])
   sigma_e  <- exp(p[3]);  rho_hat  <- tanh(p[4])
+  d_alpha  <- p[5];       d_beta   <- p[6]
+
+  # Apply the estimated intercept shifts to the fixed effects and to the
+  # population-level linear predictors stored in `predicted` (so DISTRIB and
+  # INDIVINT use the bias-corrected intercepts). NA amount predictors for
+  # never-consumers remain NA after the shift.
+  alpha_corr <- uncorr$alpha
+  beta_corr  <- uncorr$beta
+  if ("(Intercept)" %in% names(alpha_corr)) {
+    alpha_corr["(Intercept)"] <- alpha_corr["(Intercept)"] + d_alpha
+  }
+  if ("(Intercept)" %in% names(beta_corr)) {
+    beta_corr["(Intercept)"] <- beta_corr["(Intercept)"] + d_beta
+  }
+  pred_corr <- uncorr$predicted
+  if (!is.null(pred_corr$prob_linpred)) {
+    pred_corr$prob_linpred <- pred_corr$prob_linpred + d_alpha
+  }
+  if (!is.null(pred_corr$amt_linpred)) {
+    pred_corr$amt_linpred <- pred_corr$amt_linpred + d_beta
+  }
 
   if (verbose) {
     message(sprintf("    sigma_v1 = %.4f  sigma_v2 = %.4f  sigma_e = %.4f  rho = %.4f",
                     sigma_v1, sigma_v2, sigma_e, rho_hat))
+    message(sprintf("    intercept shifts: d_alpha = %.4f  d_beta = %.4f",
+                    d_alpha, d_beta))
     message(sprintf("    GHQ log-likelihood = %.3f  (convergence code: %d)",
                     -opt$value, opt$convergence))
   }
@@ -1202,15 +1241,16 @@ fit_twopart_corr_ghq <- function(prep, lambda, verbose,
   list(
     prob_fit    = uncorr$prob_fit,
     amt_fit     = uncorr$amt_fit,
-    alpha       = uncorr$alpha,
-    beta        = uncorr$beta,
+    alpha       = alpha_corr,
+    beta        = beta_corr,
     sigma2_v1   = sigma_v1^2,
     sigma2_v2   = sigma_v2^2,
     sigma2_e    = sigma_e^2,
     rho         = rho_hat,
     ghq_n_nodes = n_nodes,
     ghq_loglik  = -opt$value,
-    predicted   = uncorr$predicted,
+    ghq_intercept_shift = c(d_alpha = d_alpha, d_beta = d_beta),
+    predicted   = pred_corr,
     converged   = (opt$convergence == 0)
   )
 }

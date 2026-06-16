@@ -121,18 +121,33 @@ test_that("correlated two-part model (profile_rho) matches ground-truth central 
 })
 
 # ---------------------------------------------------------------------
-# Correlated two-part model (GHQ engine) — central stats vs ground truth
+# Correlated two-part model (GHQ engine) — full distribution vs ground truth.
+#
+# The GHQ engine jointly estimates the intercept shifts (d_alpha, d_beta)
+# along with the variance components and rho, correcting the consumers-only
+# selection bias in the amount sub-model. This brings the WHOLE distribution
+# — including the lower tail — into agreement with ground truth, so it is
+# checked tightly here (the profile_rho engine, which does not correct the
+# bias, is checked loosely above).
 # ---------------------------------------------------------------------
-test_that("correlated two-part model (GHQ) matches ground-truth central statistics", {
+test_that("correlated two-part model (GHQ) matches the full ground-truth distribution", {
   dat <- read.csv(test_path("fixtures", "corr_recall_data.csv"))
   fit <- suppressWarnings(suppressMessages(mixtran(
     dat, intake_var = "intake", subject_var = "SEQN", repeat_var = "day",
     model_type = "corr", corr_engine = "ghq", ghq_n_nodes = 5L,
     lambda = true_param("corr", "lambda"), verbose = FALSE)))
 
-  expect_gt(fit$rho, 0.1)
-  expect_lt(fit$rho, 0.9)
+  # rho recovered near the truth (0.5), better than profile_rho
+  expect_gt(fit$rho, 0.35)
+  expect_lt(fit$rho, 0.7)
+
+  # The amount intercept is bias-corrected back toward the true value (3.0),
+  # away from the upward-biased consumers-only estimate (~3.18).
+  expect_lt(abs(as.numeric(fit$beta["(Intercept)"]) - true_param("corr", "beta0")), 0.1)
+  expect_true(!is.null(fit$ghq_intercept_shift))
 
   dist <- distrib(fit, n_sims = 500, seed = 999)
-  expect_parity(dist, "corr", c("mean", "p50", "p75", "p90", "p95"), tol = 0.15)
+  expect_parity(dist, "corr",
+                c("mean", "p5", "p10", "p25", "p50", "p75", "p90", "p95"),
+                tol = 0.07)
 })
