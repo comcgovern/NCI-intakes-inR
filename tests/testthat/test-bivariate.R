@@ -171,3 +171,33 @@ test_that("distrib_bivariate custom fn_ratio works (e.g. sodium density = Na/100
   ratio_mean <- biv$ratio$Overall$mean
   expect_true(is.finite(ratio_mean) && ratio_mean > 0)
 })
+
+# ---------------------------------------------------------------------------
+# Regression: cross-component correlation must be recovered (not stuck at 0)
+#
+# Guards against the random-effect extraction bug in .extract_re(), where
+# `nlme::ranef(fit)[[1]]` collapsed the RE vector so the subject intersection
+# was always empty and cross_rho silently fell back to 0 for every dataset.
+# ---------------------------------------------------------------------------
+
+test_that("distrib_bivariate recovers positive cross_rho for correlated components", {
+  dat <- make_bivariate_data(n_subjects = 400, seed = 123)  # built-in rho = 0.4
+  biv <- suppressMessages(suppressWarnings(
+    distrib_bivariate(
+      data        = dat,
+      intake_var1 = "sodium",
+      intake_var2 = "energy",
+      subject_var = "SEQN",
+      repeat_var  = "day",
+      lambda1     = 0,
+      lambda2     = 0,
+      verbose     = FALSE,
+      n_sims      = 20
+    )
+  ))
+
+  # cross_rho must be clearly positive — a value at/near 0 indicates the
+  # RE-extraction bug fired and no subjects were matched.
+  expect_gt(biv$cross_rho, 0.1)
+  expect_lt(biv$cross_rho, 1)
+})

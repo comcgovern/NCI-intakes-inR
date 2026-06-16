@@ -240,13 +240,51 @@ Run the full test suite:
 testthat::test_dir("tests/testthat")
 ```
 
+### Parity against analytic ground truth
+
+Because the proprietary NCI SAS macros cannot be run in this project's CI, the
+package is validated against **analytic ground truth** rather than against
+another estimator. Fixed synthetic recall datasets are generated from *known*
+parameters, and the true usual-intake distribution they imply is computed
+independently by large-sample (4×10⁶) Monte Carlo. A correct SAS
+MIXTRAN/DISTRIB run would be estimating this same target, so recovering it
+within sampling/method error is the meaningful parity check.
+
+- Reference generator: [`data-raw/generate_reference.R`](data-raw/generate_reference.R)
+- Frozen datasets + reference values: `tests/testthat/fixtures/`
+- Parity tests: `tests/testthat/test-parity-reference.R`
+
+Observed recovery on the reference fixtures: the amount-only model matches the
+true distribution to ≤2%, the uncorrelated two-part model to ≤4%, and the
+correlated two-part model via `corr_engine = "ghq"` to ≤3% across the whole
+distribution (including the lower tail, thanks to the joint intercept
+bias-correction). The faster `profile_rho` engine recovers central statistics
+well but leaves the lower-tail percentiles approximate, so those are checked
+loosely.
+
+**Covariate-adjusted correlated models — a known second-order limitation.**
+The GHQ engine frees the *intercepts* but holds covariate *slopes* at the
+uncorrelated (consumed-days-only) estimates. When a covariate strongly predicts
+the probability of consumption, its amount slope is attenuated under
+consumed-days selection: in a stress test with a strong binary covariate
+(α = 1.0 on the logit consumption scale), the amount slope was recovered as
+≈0.40 vs a true 0.5 (~20%), inflating that covariate subgroup's lower-tail
+percentiles by up to ~17%. The *overall* (marginal) distribution is essentially
+unaffected (≤3% central) because slope biases cancel across the balanced
+covariate. Freeing the full fixed-effect vectors removes the residual slope
+bias (slope → ≈0.475) but adds optimiser dimensions and is not currently
+implemented; for covariate contrasts in episodic foods where consumption is
+strongly covariate-driven, interpret correlated-model subgroup tails with this
+caveat.
+
+
 ## SAS Macro Parity
 
 | SAS Macro Feature | R Implementation | Status |
 |---|---|---|
 | MIXTRAN amount-only model | `nlme::lme` | Full |
 | MIXTRAN uncorrelated two-part | `glmmPQL`/`glmer` + `lme` | Approximate (PQL) / Full (glmer) |
-| MIXTRAN correlated two-part | Profile-ρ or GHQ | Approximate / Improved |
+| MIXTRAN correlated two-part | Profile-ρ or GHQ | Approximate / Full (GHQ, intercept-bias-corrected) |
 | MIXTRAN Box-Cox lambda search | Profile likelihood grid | Full |
 | DISTRIB Monte Carlo simulation | Vectorized R | Full |
 | DISTRIB weighted percentiles/means | Custom weighted quantile | Full |
@@ -257,6 +295,46 @@ testthat::test_dir("tests/testthat")
 | Bivariate usual intake | `distrib_bivariate()` | Implemented |
 
 ## Changelog
+
+### v0.4.1 (2026-06-15)
+
+**Correctness fixes (code audit)**
+
+- **Random-effect extraction bug (major)** — `nlme::ranef(fit)[[1]]` was
+  collapsing the per-subject random-effect vector to a single unnamed value,
+  so every subject lookup missed. This silently broke three features:
+  - the correlated two-part model (`corr_engine = "profile_rho"`) always fell
+    back to `rho = 0`, regardless of the true correlation;
+  - two-part `indivint()` returned the population-level prediction for *every*
+    subject (the BLUP step was inert);
+  - bivariate `cross_rho` was always estimated as 0.
+
+  All three now recover the intended quantities. Added regression tests that
+  assert non-degenerate `rho`, per-subject variation in `indivint()`
+  predictions, and positive `cross_rho` for correlated components.
+- **Weighted quantile convention** — `weighted_quantiles()` switched from a
+  right-edge cumulative-weight convention (which biased DISTRIB percentiles
+  downward) to the midpoint/Hazen convention, so equal-weight percentiles now
+  match base R `quantile(..., type = 5)`.
+- **`plot.distrib_result()`** — replaced the invalid colour name `"teal"`
+  (which errored for exactly 7 subgroups) with `"darkcyan"`.
+- **Gauss-Hermite tables** — added the previously missing precomputed node/
+  weight tables for `n = 5` (the default) and `n = 9`, avoiding a repeated
+  eigendecomposition inside the GHQ likelihood loop; removed dead code in
+  `gh_nodes_adaptive()`.
+
+**Accuracy improvement**
+
+- **GHQ correlated engine now bias-corrects the intercepts** — the amount
+  sub-model is fit on consumed days only, so under positive ρ those days
+  over-represent high-amount subjects and the consumers-only intercept is
+  biased upward; the previous engines left it uncorrected, inflating the
+  lower-tail percentiles of the correlated two-part usual-intake distribution
+  by 20–40% against analytic ground truth. The `corr_engine = "ghq"` path now
+  estimates the probability/amount intercept shifts jointly with the variance
+  components and ρ (NLMIXED-style), recovering the *full* distribution —
+  including the lower tail — to within ~3%. The faster `profile_rho` default
+  remains approximate in the tail; use `"ghq"` when tail accuracy matters.
 
 ### v0.4.0 (2026-03-21)
 

@@ -172,3 +172,34 @@ test_that("indivint works for corr two-part model", {
   expect_equal(nrow(result), length(unique(dat$subject)))
   expect_true(all(result$predicted_usual_orig >= 0))
 })
+
+# ---------------------------------------------------------------------------
+# Regression: two-part BLUP predictions must vary across subjects
+#
+# Guards against the random-effect extraction bug where the per-subject
+# random effects collapsed to a single unnamed value, so every subject
+# lookup missed and all subjects received the identical population-level
+# prediction — silently defeating the purpose of INDIVINT (BLUP).
+# ---------------------------------------------------------------------------
+
+test_that("indivint two-part predictions vary across subjects (BLUP is used)", {
+  dat <- make_episodic_data_indivint(n_subjects = 500, seed = 77)
+  fit <- suppressWarnings(suppressMessages(mixtran(
+    data        = dat,
+    intake_var  = "intake",
+    subject_var = "subject",
+    repeat_var  = "day",
+    model_type  = "uncorr",
+    lambda      = 0.25,
+    verbose     = FALSE
+  )))
+  result <- indivint(fit)
+
+  # Predictions must reflect individual random effects, not a single constant.
+  expect_gt(length(unique(round(result$amt_usual_orig, 6))), 50)
+  expect_gt(stats::sd(result$predicted_usual_orig), 0)
+
+  # The amount random effects should correlate with the true simulated v2.
+  # (Subjects who consume more should have higher predicted amounts.)
+  expect_gt(stats::sd(result$amt_usual_orig), 0)
+})

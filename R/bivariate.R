@@ -203,11 +203,11 @@ distrib_bivariate <- function(data,
 .extract_re <- function(fit) {
   if (fit$model_type == "amount") {
     # nlme lme fit
-    re_df <- nlme::ranef(fit$model_fit)[[1]]
+    re_df <- nlme::ranef(fit$model_fit)
     stats::setNames(as.numeric(re_df[[1]]), rownames(re_df))
   } else {
     # Two-part: use amount RE (v2)
-    re_df <- nlme::ranef(fit$amt_fit)[[1]]
+    re_df <- nlme::ranef(fit$amt_fit)
     stats::setNames(as.numeric(re_df[[1]]), rownames(re_df))
   }
 }

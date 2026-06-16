@@ -1,0 +1,6 @@
+^data-raw$
+^docs$
+^PACKAGE_SPEC\.md$
+^\.github$
+^.*\.Rproj$
+^\.Rproj\.user$

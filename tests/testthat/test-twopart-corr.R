@@ -289,3 +289,35 @@ test_that("mixtran does NOT emit the >90% diagnostic for amount model", {
     info = "amount model should not trigger the two-part ubiquitous-food diagnostic"
   )
 })
+
+# ---------------------------------------------------------------------------
+# Regression: profile-rho must actually recover correlation (not fall back to 0)
+#
+# Guards against the random-effect extraction bug where
+# `nlme::ranef(fit)[[1]]` collapsed the RE vector to a single unnamed value,
+# making every subject lookup miss, so the profile likelihood saw no valid
+# residual pairs and silently fell back to rho = 0 for ALL correlated data.
+# ---------------------------------------------------------------------------
+
+test_that("profile-rho recovers a substantially positive rho for strongly correlated data", {
+  dat <- make_corr_data(n_subjects = 600, true_rho = 0.6, seed = 11)
+  fit <- suppressWarnings(suppressMessages(mixtran(
+    data        = dat,
+    intake_var  = "wholegrain_g",
+    subject_var = "SEQN",
+    repeat_var  = "day",
+    model_type  = "corr",
+    corr_engine = "profile_rho",
+    lambda      = 0.25,
+    verbose     = FALSE
+  )))
+
+  # The estimate is approximate, but must be clearly positive — a value at or
+  # near 0 indicates the fallback path (i.e. the RE-extraction bug) fired.
+  expect_gt(fit$rho, 0.2)
+  expect_lt(fit$rho, 1)
+
+  # The profile likelihood must have evaluated real residual pairs, so the
+  # stored profile should be a non-empty data frame.
+  expect_gt(nrow(fit$rho_profile), 0)
+})

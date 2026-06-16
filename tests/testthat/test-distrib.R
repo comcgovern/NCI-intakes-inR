@@ -121,3 +121,15 @@ test_that("weighted_quantiles falls back to unweighted when all weights are zero
   expect_true(is.finite(q))
   expect_equal(q, 3, tolerance = 0.01)  # unweighted median of 1:5
 })
+
+test_that("weighted_quantiles with equal weights matches base R quantile (type 5)", {
+  # The midpoint (Hazen) plotting-position convention reduces to base R's
+  # quantile type 5 for equal weights. This guards against the earlier
+  # right-edge convention that biased percentiles downward (median 1:5 -> 2.5).
+  x <- c(3, 1, 4, 1, 5, 9, 2, 6)
+  w <- rep(1, length(x))
+  probs <- c(0.1, 0.25, 0.5, 0.75, 0.9)
+  wq  <- nciusual:::weighted_quantiles(x, w, probs)
+  ref <- as.numeric(stats::quantile(x, probs, type = 5))
+  expect_equal(wq, ref, tolerance = 1e-8)
+})
