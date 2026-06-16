@@ -47,7 +47,12 @@ NULL
 #'   yields accurate variance component, ρ, and (critically) lower-tail
 #'   percentile estimates at the cost of additional computation. The number
 #'   of quadrature nodes is controlled by `ghq_n_nodes`. (Covariate slopes
-#'   are held at the uncorrelated estimates; only the intercepts are freed.)
+#'   are held at the uncorrelated estimates; only the intercepts are freed.
+#'   This is sufficient for the overall usual-intake distribution. A residual
+#'   attenuation of covariate *slopes* remains only when a covariate strongly
+#'   predicts the probability of consumption — relevant for covariate-adjusted
+#'   or subgroup analyses of the correlated model, not for marginal
+#'   distributions.)
 #' @param ghq_n_nodes Number of Gauss-Hermite quadrature nodes per dimension
 #'   when `corr_engine = "ghq"`. Total bivariate nodes = `ghq_n_nodes^2`.
 #'   Supported values: 3, 5 (default), 7, 9. Larger values are more accurate

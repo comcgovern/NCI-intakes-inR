@@ -262,6 +262,21 @@ bias-correction). The faster `profile_rho` engine recovers central statistics
 well but leaves the lower-tail percentiles approximate, so those are checked
 loosely.
 
+**Covariate-adjusted correlated models — a known second-order limitation.**
+The GHQ engine frees the *intercepts* but holds covariate *slopes* at the
+uncorrelated (consumed-days-only) estimates. When a covariate strongly predicts
+the probability of consumption, its amount slope is attenuated under
+consumed-days selection: in a stress test with a strong binary covariate
+(α = 1.0 on the logit consumption scale), the amount slope was recovered as
+≈0.40 vs a true 0.5 (~20%), inflating that covariate subgroup's lower-tail
+percentiles by up to ~17%. The *overall* (marginal) distribution is essentially
+unaffected (≤3% central) because slope biases cancel across the balanced
+covariate. Freeing the full fixed-effect vectors removes the residual slope
+bias (slope → ≈0.475) but adds optimiser dimensions and is not currently
+implemented; for covariate contrasts in episodic foods where consumption is
+strongly covariate-driven, interpret correlated-model subgroup tails with this
+caveat.
+
 
 ## SAS Macro Parity
 
