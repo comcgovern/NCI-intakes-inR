@@ -25,7 +25,10 @@ summary.mixtran_fit <- function(object, ...) {
   cat(sprintf("  Intake variable : %s\n", x$intake_var))
   cat(sprintf("  Model type      : %s\n", x$model_type))
   cat(sprintf("  Converged       : %s\n", x$converged))
-  cat(sprintf("  Box-Cox lambda  : %.4f\n", x$lambda))
+  cat(sprintf("  Box-Cox lambda  : %.4f%s\n", x$lambda,
+              if (isTRUE(x$lambda_estimated)) "  (estimated)" else "  (fixed)"))
+  if (!is.null(x$weight_var)) cat(sprintf("  Weight variable : %s\n", x$weight_var))
+  cat(sprintf("  -2 log lik (wtd): %.6g\n", x$m2loglik))
   cat(sprintf("  N subjects      : %d\n", x$n_subjects))
   cat(sprintf("  N recalls       : %d\n", x$n_recalls))
   cat(sprintf("  N positive      : %d  (%.1f%% of recalls)\n",
@@ -70,14 +73,15 @@ summary.mixtran_fit <- function(object, ...) {
 #' Plot diagnostics for a fitted MIXTRAN model
 #'
 #' Produces up to four diagnostic plots:
-#'   1. Histogram of transformed intakes with fitted normal overlay
-#'   2. Q-Q plot of transformed residuals
-#'   3. Profile likelihood of Box-Cox lambda (if estimated from data)
-#'   4. Histogram of raw intakes for context
+#'   1. Histogram of Box-Cox transformed positive intakes
+#'   2. Q-Q plot of standardised within-person residuals of the amount part
+#'      (`(T(y) - x'beta - u2_hat) / sd_e`)
+#'   3. Histogram of the empirical Bayes estimates of the amount random effect
+#'   4. Histogram of raw positive intakes
 #'
 #' @param x A `mixtran_fit` object from mixtran()
-#' @param which Integer vector: which plots to draw (1–4). Default all.
-#' @param ... Passed to plot()
+#' @param which Integer vector: which plots to draw (1-4). Default all.
+#' @param ... Unused
 #' @export
 plot.mixtran_fit <- function(x, which = 1:4, ...) {
   op <- graphics::par(no.readonly = TRUE)
@@ -88,86 +92,35 @@ plot.mixtran_fit <- function(x, which = 1:4, ...) {
   nr <- ceiling(n_plots / nc)
   if (n_plots > 1) graphics::par(mfrow = c(nr, nc))
 
-  pred <- x$predicted
+  w   <- x$data
+  pos <- w$consumed == 1
+  tz  <- boxcox_transform(w$intake[pos], x$lambda)
+  X2  <- cbind(1, as.matrix(w[pos, x$amt_covs_used, drop = FALSE]))
+  u2  <- x$predicted$u2[match(w$subject[pos], x$predicted$subject)]
+  ve  <- if (x$model_type == "amount") x$sigma2_w else x$sigma2_e
 
-  # --- Plot 1: Histogram of transformed intake ---
   if (1 %in% which) {
-    t_col <- if ("t_intake" %in% names(pred)) "t_intake" else NULL
-    if (!is.null(t_col)) {
-      tz <- pred[[t_col]][!is.na(pred[[t_col]])]
-      graphics::hist(tz, breaks = 40, freq = FALSE,
-                     main = "Transformed intake (Box-Cox)",
-                     xlab = paste0("T(intake), lambda=", round(x$lambda, 3)),
-                     col = "steelblue", border = "white")
-      xg <- seq(min(tz), max(tz), length.out = 200)
-      if (x$model_type == "amount") {
-        mu    <- as.numeric(x$beta["(Intercept)"])
-        sigma <- sqrt(x$sigma2_b + x$sigma2_w)
-      } else {
-        mu    <- as.numeric(x$beta["(Intercept)"])
-        sigma <- sqrt(x$sigma2_v2 + x$sigma2_e)
-      }
-      graphics::lines(xg, stats::dnorm(xg, mu, sigma),
-                      col = "tomato", lwd = 2)
-    } else {
-      graphics::plot.new()
-      graphics::text(0.5, 0.5, "Transformed data\nnot stored in predicted",
-                     cex = 0.9)
-    }
+    graphics::hist(tz, breaks = 40, freq = FALSE,
+                   main = "Transformed intake (Box-Cox)",
+                   xlab = paste0("T(intake), lambda=", round(x$lambda, 3)),
+                   col = "steelblue", border = "white")
   }
-
-  # --- Plot 2: Q-Q plot of residuals ---
   if (2 %in% which) {
-    if (x$model_type == "amount" && !is.null(x$model_fit)) {
-      res <- stats::residuals(x$model_fit, type = "normalized")
-      stats::qqnorm(res, main = "Q-Q: Normalised residuals", pch = 16,
-                    cex = 0.4, col = grDevices::rgb(0.2, 0.4, 0.7, 0.5))
-      stats::qqline(res, col = "tomato", lwd = 2)
-    } else if (!is.null(x$amt_fit)) {
-      res <- stats::residuals(x$amt_fit, type = "normalized")
-      stats::qqnorm(res, main = "Q-Q: Amount model residuals", pch = 16,
-                    cex = 0.4, col = grDevices::rgb(0.2, 0.4, 0.7, 0.5))
-      stats::qqline(res, col = "tomato", lwd = 2)
-    } else {
-      graphics::plot.new()
-      graphics::text(0.5, 0.5, "Residuals not available", cex = 0.9)
-    }
+    res <- (tz - as.numeric(X2 %*% x$beta) - u2) / sqrt(ve)
+    stats::qqnorm(res, main = "Q-Q: within-person residuals", pch = 16,
+                  cex = 0.4, col = grDevices::rgb(0.2, 0.4, 0.7, 0.5))
+    stats::qqline(res, col = "tomato", lwd = 2)
   }
-
-  # --- Plot 3: Profile likelihood of rho (corr model) ---
   if (3 %in% which) {
-    if (x$model_type == "corr" && !is.null(x$rho_profile)) {
-      rp <- x$rho_profile
-      graphics::plot(rp$rho, rp$loglik, type = "l",
-                     main = expression("Profile likelihood: " * rho),
-                     xlab = expression(rho), ylab = "Log-likelihood",
-                     lwd = 2, col = "steelblue")
-      graphics::abline(v = x$rho, col = "tomato", lty = 2, lwd = 2)
-      graphics::legend("topright",
-                       legend = sprintf("hat(rho) = %.3f", x$rho),
-                       col = "tomato", lty = 2, bty = "n")
-    } else {
-      graphics::plot.new()
-      graphics::text(0.5, 0.5, "rho profile only available\nfor corr model", cex = 0.9)
-    }
+    graphics::hist(x$predicted$u2, breaks = 40, freq = FALSE,
+                   main = "EBE of amount random effect (u2)",
+                   xlab = "u2", col = "goldenrod", border = "white")
   }
-
-  # --- Plot 4: Histogram of raw (back-transformed) intake ---
   if (4 %in% which) {
-    raw_col <- x$intake_var
-    if (!is.null(pred) && raw_col %in% names(pred)) {
-      ry <- pred[[raw_col]]
-      ry <- ry[!is.na(ry) & ry > 0]
-      graphics::hist(ry, breaks = 50, freq = FALSE,
-                     main = paste("Raw intake:", raw_col),
-                     xlab = raw_col,
-                     col = "mediumseagreen", border = "white")
-    } else {
-      graphics::plot.new()
-      graphics::text(0.5, 0.5, "Raw intake data not stored\nin predicted", cex = 0.9)
-    }
+    graphics::hist(w$intake[pos], breaks = 50, freq = FALSE,
+                   main = paste("Raw intake:", x$intake_var),
+                   xlab = x$intake_var, col = "mediumseagreen", border = "white")
   }
-
   invisible(x)
 }
 

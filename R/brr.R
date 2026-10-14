@@ -24,8 +24,11 @@ NULL
 #' @param subject_var Name of the subject ID variable (character). Used to
 #'   merge replicate weights to data rows.
 #' @param mixtran_args Named list of arguments to pass to mixtran(). Must
-#'   include at minimum intake_var, subject_var, repeat_var. Do not include
-#'   weight_var here; that is handled internally.
+#'   include at minimum intake_var, subject_var, repeat_var, and should include
+#'   `weight_var` naming the full-sample (base) weight: the full-sample
+#'   estimate uses it, and each replicate replaces it with the replicate
+#'   weight, as in the NCI BRR workflow (base run with the sampling weight,
+#'   one run per replicate weight).
 #' @param distrib_args Named list of arguments to pass to distrib(). Optional.
 #' @param fay_factor Fay's adjustment factor (default 0.3, the NHANES standard)
 #' @param parallel Logical. If TRUE, use parallel::mclapply() for replicate
@@ -58,11 +61,18 @@ brr_usual_intake <- function(data,
     message(sprintf("BRR: %d replicates, Fay factor = %.2f", K, fay_factor))
   }
 
-  # --- Full-sample estimate ---
+  # --- Full-sample estimate (base weight) ---
   if (verbose) message("Running full-sample estimate...")
+  if (is.null(mixtran_args$weight_var)) {
+    warning("mixtran_args has no weight_var: the full-sample estimate is ",
+            "unweighted while replicates use replicate weights. Supply the ",
+            "full-sample weight as mixtran_args$weight_var.", call. = FALSE)
+  }
 
   full_args <- c(list(data = data), mixtran_args)
+  full_args$verbose <- full_args$verbose %||% FALSE
   full_fit  <- do.call(mixtran, full_args)
+  if (is.null(full_fit)) stop("The full-sample mixtran() fit returned NULL.")
 
   full_dist_args <- c(list(mixtran_obj = full_fit), distrib_args)
   full_dist <- do.call(distrib, full_dist_args)
@@ -88,13 +98,19 @@ brr_usual_intake <- function(data,
       #  user may supply exact BRR weights with some zeros from Hadamard
       #  construction — we keep zero-weight subjects in the model but give
       #  them down-weighted influence)
+      if (anyNA(data_k$.brr_wt_)) {
+        stop("some subjects have no replicate weight")
+      }
       args_k <- c(list(data = data_k), mixtran_args)
       args_k$weight_var <- ".brr_wt_"
+      args_k$start <- full_fit           # starting values from the base run
+      args_k$verbose <- FALSE
 
       fit_k  <- do.call(mixtran, args_k)
       dist_args_k <- c(list(mixtran_obj = fit_k), distrib_args)
       dist_k <- do.call(distrib, dist_args_k)
-      distrib_to_vector(dist_k)
+      v <- distrib_to_vector(dist_k)
+      v[names(theta0)]                   # align statistics by name
     }, error = function(e) {
       warning(sprintf("Replicate %d failed: %s", k, e$message))
       rep(NA_real_, length(theta0))
@@ -104,6 +120,7 @@ brr_usual_intake <- function(data,
   if (parallel) {
     n_cores <- n_cores %||% max(1L, parallel::detectCores() %/% 2L)
     if (requireNamespace("future.apply", quietly = TRUE)) {
+      # uses the backend set by future::plan(); n_cores is not used here
       theta_k_list <- future.apply::future_lapply(
         seq_len(K), run_replicate,
         future.seed = TRUE
@@ -139,7 +156,7 @@ brr_usual_intake <- function(data,
   ci_lower <- theta0 - 1.96 * brr_se
   ci_upper <- theta0 + 1.96 * brr_se
 
-  n_failed <- sum(apply(theta_matrix, 2, function(x) any(is.na(x))))
+  n_failed <- sum(apply(theta_matrix, 2, function(x) all(is.na(x))))
   if (n_failed > 0 && verbose) {
     message(sprintf("  Warning: %d replicate(s) failed and were excluded.", n_failed))
   }
@@ -325,9 +342,10 @@ generate_nhanes_brr_weights <- function(data,
 #'
 #' Prepares a multi-cycle NHANES dataset for use with [mixtran()] and
 #' [brr_usual_intake()]. The key operation is rescaling sampling weights:
-#' CDC recommends dividing each cycle's full-sample weight by the number of
-#' cycles being pooled so that estimates represent the pooled reference period
-#' (typically 2 years per cycle × N cycles).
+#' for cycles of equal length, CDC guidance divides each cycle's weight by the
+#' number of cycles pooled. Cycles of unequal length (e.g. 2017-March 2020
+#' pre-pandemic, about 3.2 years) need length-proportional factors instead;
+#' supply them via `cycle_years`.
 #'
 #' @details
 #' The function:
@@ -356,6 +374,10 @@ generate_nhanes_brr_weights <- function(data,
 #' @param cycle_names Optional character vector of cycle labels (same length as
 #'   `cycle_list`). Used as the `cycle` column values. Defaults to
 #'   `c("cycle1", "cycle2", ...)`.
+#' @param cycle_years Optional numeric vector of cycle lengths in years (same
+#'   length as `cycle_list`). When given, cycle `i`'s weights are multiplied by
+#'   `cycle_years[i] / sum(cycle_years)` instead of divided by the number of
+#'   cycles. Check current CDC NHANES weighting guidance for the cycles used.
 #' @return A single data frame with all cycles pooled, plus a `cycle` column
 #'   identifying the source cycle.
 #' @references
@@ -367,7 +389,8 @@ combine_nhanes_cycles <- function(cycle_list,
                                    weight_var,
                                    subject_var,
                                    make_unique_ids = TRUE,
-                                   cycle_names = NULL) {
+                                   cycle_names = NULL,
+                                   cycle_years = NULL) {
 
   if (!is.list(cycle_list) || length(cycle_list) == 0) {
     stop("'cycle_list' must be a non-empty list of data frames.")
@@ -379,6 +402,12 @@ combine_nhanes_cycles <- function(cycle_list,
   } else if (length(cycle_names) != n_cycles) {
     stop("'cycle_names' must have the same length as 'cycle_list'.")
   }
+
+  if (!is.null(cycle_years) && length(cycle_years) != n_cycles) {
+    stop("'cycle_years' must have the same length as 'cycle_list'.")
+  }
+  wt_factor <- if (is.null(cycle_years)) rep(1 / n_cycles, n_cycles) else
+    cycle_years / sum(cycle_years)
 
   result_list <- vector("list", n_cycles)
 
@@ -392,8 +421,8 @@ combine_nhanes_cycles <- function(cycle_list,
       }
     }
 
-    # Rescale weights: divide by number of cycles (CDC pooling convention)
-    df[[weight_var]] <- df[[weight_var]] / n_cycles
+    # Rescale weights (equal-length cycles: divide by number of cycles)
+    df[[weight_var]] <- df[[weight_var]] * wt_factor[i]
 
     # Make subject IDs unique across cycles
     if (make_unique_ids) {

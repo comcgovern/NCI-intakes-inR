@@ -42,6 +42,21 @@ ref_stats <- function(ui) {
 reference_rows <- list()
 param_rows     <- list()
 
+# NCI definition of usual intake (Tooze et al. 2006; DISTRIB macro): the
+# expected daily intake given the person's random effects, i.e. the Box-Cox
+# back-transformation integrated over the within-person error e ~ N(0, s2_e).
+# Computed here essentially exactly with 60-point Gauss-Hermite quadrature
+# (DISTRIB itself uses a 9-point rule).
+expected_amount <- function(mu, lambda, s2_e, n = 60) {
+  gh <- gh_nodes_normal(n)
+  out <- 0
+  for (q in seq_len(n)) {
+    out <- out + gh$weights[q] *
+      pmax(boxcox_inverse(mu + gh$nodes[q] * sqrt(s2_e), lambda), 0)
+  }
+  out
+}
+
 add_reference <- function(model, ui) {
   s <- ref_stats(ui)
   reference_rows[[model]] <<- data.frame(
@@ -53,7 +68,8 @@ add_reference <- function(model, ui) {
 # =====================================================================
 # 1. AMOUNT MODEL
 #    T(Y) = beta0 + beta_we * weekend + u + e ,  u ~ N(0, s2_b), e ~ N(0, s2_w)
-#    Usual intake (weekend removed) = boxcox_inverse( N(beta0, s2_b) )
+#    Usual intake = (4/7) g(beta0 + u) + (3/7) g(beta0 + beta_we + u), with
+#    g(mu) = E_e[ boxcox_inverse(mu + e) ]  (DISTRIB weekday/weekend average)
 # =====================================================================
 set.seed(1001)
 p_amt <- list(lambda = 0.30, beta0 = 15.0, beta_weekend = 0.5,
@@ -74,15 +90,17 @@ write.csv(amount_data, file.path(FIX, "amount_recall_data.csv"), row.names = FAL
 
 # Analytic ground truth: marginal usual intake distribution
 set.seed(20001)
-ui_true <- pmax(boxcox_inverse(
-  rnorm(REF_MC_N, p_amt$beta0, sqrt(p_amt$sigma2_b)), p_amt$lambda), 0)
+um <- rnorm(REF_MC_N, 0, sqrt(p_amt$sigma2_b))
+ui_true <- (4/7) * expected_amount(p_amt$beta0 + um, p_amt$lambda, p_amt$sigma2_w) +
+           (3/7) * expected_amount(p_amt$beta0 + p_amt$beta_weekend + um,
+                                   p_amt$lambda, p_amt$sigma2_w)
 add_reference("amount", ui_true)
 
 # =====================================================================
 # 2. TWO-PART UNCORRELATED MODEL
 #    P(consume) = plogis(alpha0 + v1),  v1 ~ N(0, s2_v1)
 #    T(amount)  = beta0 + v2 + e,       v2 ~ N(0, s2_v2),  e ~ N(0, s2_e)
-#    Usual intake = plogis(alpha0 + v1) * boxcox_inverse(beta0 + v2)
+#    Usual intake = plogis(alpha0 + v1) * E_e[ boxcox_inverse(beta0 + v2 + e) ]
 # =====================================================================
 set.seed(1002)
 p_unc <- list(lambda = 0.25, alpha0 = 0.3, sigma2_v1 = 1.0,
@@ -107,7 +125,7 @@ set.seed(20002)
 v1m <- rnorm(REF_MC_N, 0, sqrt(p_unc$sigma2_v1))
 v2m <- rnorm(REF_MC_N, 0, sqrt(p_unc$sigma2_v2))
 ui_true <- plogis(p_unc$alpha0 + v1m) *
-           pmax(boxcox_inverse(p_unc$beta0 + v2m, p_unc$lambda), 0)
+           expected_amount(p_unc$beta0 + v2m, p_unc$lambda, p_unc$sigma2_e)
 add_reference("uncorr", ui_true)
 
 # =====================================================================
@@ -139,7 +157,7 @@ z1m <- rnorm(REF_MC_N); z2m <- rnorm(REF_MC_N)
 v1m <- sd1 * z1m
 v2m <- sd2 * (p_cor$rho * z1m + sqrt(1 - p_cor$rho^2) * z2m)
 ui_true <- plogis(p_cor$alpha0 + v1m) *
-           pmax(boxcox_inverse(p_cor$beta0 + v2m, p_cor$lambda), 0)
+           expected_amount(p_cor$beta0 + v2m, p_cor$lambda, p_cor$sigma2_e)
 add_reference("corr", ui_true)
 
 # =====================================================================

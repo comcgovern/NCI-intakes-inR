@@ -34,7 +34,7 @@ make_episodic_data <- function(n_subjects    = 700,
   )
 }
 
-test_that("uncorrelated two-part model recovers variance components within 25%", {
+test_that("uncorrelated two-part model recovers variance components", {
   dat <- make_episodic_data(n_subjects = 1000)
   fit <- suppressMessages(mixtran(
     data       = dat,
@@ -54,9 +54,11 @@ test_that("uncorrelated two-part model recovers variance components within 25%",
   v2_err <- abs(fit$sigma2_v2 - 1.5) / 1.5
   e_err  <- abs(fit$sigma2_e  - 1.0) / 1.0
 
+  # sigma2_v1 is weakly identified with 1-2 binary recalls per person; the
+  # MLE for this dataset is 0.66 (identical to lme4::glmer with nAGQ = 25)
   expect_lte(v1_err, 0.40, label = "sigma2_v1 within 40%")
-  expect_lte(v2_err, 0.40, label = "sigma2_v2 within 40%")
-  expect_lte(e_err,  0.40, label = "sigma2_e within 40%")
+  expect_lte(v2_err, 0.25, label = "sigma2_v2 within 25%")
+  expect_lte(e_err,  0.25, label = "sigma2_e within 25%")
 })
 
 test_that("uncorrelated two-part model returns required fields", {
@@ -108,8 +110,8 @@ test_that("two-part model returns NULL with warning when no subjects have 2+ pos
   )
   expect_null(result)
 
-  # skip_if_empty = FALSE: prepare_mixtran_data also returns NULL with warning
-  result2 <- expect_warning(
+  # skip_if_empty = FALSE: stops with an error
+  expect_error(
     mixtran(
       data          = dat,
       intake_var    = "intake",
@@ -122,5 +124,31 @@ test_that("two-part model returns NULL with warning when no subjects have 2+ pos
     ),
     "2\\+ positive recalls"
   )
-  expect_null(result2)
+})
+
+test_that("uncorrelated fit equals separate probability and amount fits (MIXTRAN nocorr)", {
+  dat <- make_episodic_data(n_subjects = 300)
+  fit <- suppressMessages(mixtran(dat, "wholegrain_g", "SEQN", "day",
+                                  model_type = "uncorr", verbose = FALSE))
+  # the amount part uses consumption days only and estimates lambda
+  pos <- dat[dat$wholegrain_g > 0, ]
+  famt <- suppressMessages(mixtran(pos, "wholegrain_g", "SEQN", "day",
+                                   model_type = "amount", verbose = FALSE))
+  expect_equal(unname(fit$beta), unname(famt$beta), tolerance = 1e-4)
+  expect_equal(fit$lambda, famt$lambda, tolerance = 1e-4)
+  expect_equal(fit$sigma2_v2, famt$sigma2_b, tolerance = 1e-4)
+})
+
+
+test_that("probability part equals lme4::glmer with adaptive quadrature (same likelihood)", {
+  skip_if_not_installed("lme4")
+  dat <- make_episodic_data(n_subjects = 600, seed = 7)
+  fit <- suppressMessages(mixtran(dat, "wholegrain_g", "SEQN", "day",
+                                  model_type = "uncorr", lambda = 0.25, verbose = FALSE))
+  dat$yn <- as.numeric(dat$wholegrain_g > 0)
+  dat$seq_num <- as.numeric(dat$day > 1)
+  g <- lme4::glmer(yn ~ seq_num + (1 | SEQN), data = dat, family = stats::binomial,
+                   nAGQ = 25)
+  expect_equal(fit$sigma2_v1, as.numeric(lme4::VarCorr(g)$SEQN), tolerance = 1e-3)
+  expect_equal(unname(fit$alpha), unname(lme4::fixef(g)), tolerance = 1e-3)
 })

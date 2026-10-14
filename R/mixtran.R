@@ -1,82 +1,82 @@
 #' MIXTRAN: Fit NCI Usual Intake Models
 #'
-#' R port of the NCI MIXTRAN SAS macro. Fits nonlinear mixed effects models
-#' to 24-hour dietary recall data to estimate parameters of the usual intake
-#' distribution, separating within-person from between-person variation.
+#' R port of the NCI MIXTRAN SAS macro (v2.1). Fits nonlinear mixed models
+#' to 24-hour dietary recall data to estimate the parameters of the usual
+#' intake distribution, separating within-person from between-person
+#' variation.
 #'
-#' Three model types are supported:
-#' - "amount": Amount-only model for ubiquitously consumed nutrients
-#'             (e.g., total energy, sodium, added sugars)
-#' - "uncorr": Two-part model with uncorrelated random effects for
-#'             episodically consumed foods
-#' - "corr":   Two-part model with correlated random effects (most general)
+#' Three model types are supported, matching MIXTRAN's `modeltype=`:
+#' - "amount": amount-only model for ubiquitously consumed components
+#'             (MIXTRAN `modeltype=amount`)
+#' - "uncorr": two-part model with uncorrelated random effects
+#'             (MIXTRAN `modeltype=nocorr`)
+#' - "corr":   two-part model with correlated random effects
+#'             (MIXTRAN `modeltype=corr`, the default in SAS)
 #'
 #' @name mixtran
 NULL
 
 #' Fit an NCI usual intake model (MIXTRAN equivalent)
 #'
+#' All models are fitted the way MIXTRAN fits them with PROC NLMIXED:
+#'
+#' * **Survey weights** (`weight_var`, MIXTRAN's `replicate_var`) multiply each
+#'   subject's marginal log-likelihood, as the NLMIXED `REPLICATE` statement
+#'   does. The weight must be constant within subject. (SAS additionally
+#'   requires integer weights; non-integer weights are accepted here.)
+#' * **Box-Cox lambda** is a free parameter of the amount model, estimated by
+#'   maximum likelihood with the bound `lambda >= 0.01` (`A_LAMBDA > 0.01`).
+#'   Its starting value comes from a grid search over `lambda_grid`
+#'   (0.05 to 1 by 0.05, as in MIXTRAN's PROC TRANSREG step) using the amount
+#'   covariates, or 0.4 when there are none. Supply `lambda` to fix it.
+#' * **Two-part models**: the uncorrelated model fits the probability and
+#'   amount parts separately; the correlated model then maximises the joint
+#'   likelihood starting from the uncorrelated estimates, with the random
+#'   effects integrated out (adaptive Gauss-Hermite quadrature over the
+#'   probability random effect; the amount random effect is integrated in
+#'   closed form).
+#'
 #' @param data Data frame in long format (one row per recall per person)
 #' @param intake_var Name of the intake variable (character)
 #' @param subject_var Name of the subject ID variable (character)
 #' @param repeat_var Name of the recall day indicator (character), e.g. 1 or 2
 #' @param model_type One of "amount", "uncorr", "corr"
-#' @param covariates Character vector of covariate names. Must be binary or
-#'   continuous. Categorical variables with >2 levels should be dummy-coded.
-#' @param weekend_var Optional name of weekend indicator variable (character)
-#' @param weight_var Optional name of survey weight variable (character)
-#' @param lambda Box-Cox lambda. If NULL, estimated from data.
-#' @param lambda_grid Grid for Box-Cox search (only used if lambda is NULL)
-#' @param min_positive Minimum value to replace zeros in amount model.
-#'   Default NULL uses half the minimum positive value (NCI convention).
-#' @param prob_engine Engine for the logistic GLMM probability sub-model in
-#'   two-part models. `"glmmPQL"` (default) uses `MASS::glmmPQL()` —
-#'   fast but uses penalized quasi-likelihood (PQL), which can attenuate
-#'   variance components. `"glmer"` uses `lme4::glmer()` with Laplace
-#'   approximation for full ML, giving closer parity with SAS PROC NLMIXED.
-#'   Requires the **lme4** package.
-#' @param corr_engine Engine for the correlated two-part model
-#'   (`model_type = "corr"` only). `"profile_rho"` (default) uses profile
-#'   likelihood over a grid of ρ values — fast and robust, but approximate.
-#'   `"ghq"` uses Gauss-Hermite quadrature to integrate out the bivariate
-#'   random effects and optimises over (σ²_v1, σ²_v2, σ²_e, ρ) **and the
-#'   probability/amount intercept shifts** jointly. Freeing the intercepts
-#'   corrects the selection bias that arises because the amount sub-model is
-#'   fit on consumed days only: under positive ρ those days over-represent
-#'   high-amount subjects, biasing the consumers-only intercept upward. This
-#'   yields accurate variance component, ρ, and (critically) lower-tail
-#'   percentile estimates at the cost of additional computation. The number
-#'   of quadrature nodes is controlled by `ghq_n_nodes`. (Covariate slopes
-#'   are held at the uncorrelated estimates; only the intercepts are freed.
-#'   This is sufficient for the overall usual-intake distribution. A residual
-#'   attenuation of covariate *slopes* remains only when a covariate strongly
-#'   predicts the probability of consumption — relevant for covariate-adjusted
-#'   or subgroup analyses of the correlated model, not for marginal
-#'   distributions.)
-#' @param ghq_n_nodes Number of Gauss-Hermite quadrature nodes per dimension
-#'   when `corr_engine = "ghq"`. Total bivariate nodes = `ghq_n_nodes^2`.
-#'   Supported values: 3, 5 (default), 7, 9. Larger values are more accurate
-#'   but slower. 5 is typically sufficient for variance component estimation.
+#' @param covariates Character vector of numeric covariate names for the
+#'   amount part (MIXTRAN `covars_amt`) and, unless `covariates_prob` is given,
+#'   also for the probability part. Categorical variables must be dummy-coded.
 #' @param subgroup_var Optional name of a subgroup variable (character) to
-#'   carry through to the predicted data for use by `distrib()`. The variable
-#'   is not used in model fitting — it is retained purely for labelling.
-#' @param start Optional `mixtran_fit` object from a previous call. When
-#'   supplied, its fixed-effect estimates are used as starting values for the
-#'   optimiser, which can improve convergence speed and stability (useful in
-#'   BRR replicates or when re-fitting after a lambda update).
-#' @param skip_if_empty Logical (default `TRUE`). When `TRUE`, if the data
-#'   are insufficient to fit the requested model, `mixtran()` emits a warning
-#'   and returns `NULL` instead of stopping with an error. For
-#'   `model_type = "amount"` this triggers when there are no positive intake
-#'   values; for two-part models (`"uncorr"`, `"corr"`) it triggers when no
-#'   subject has 2+ positive recalls. Useful when iterating over many foods
-#'   with `lapply()` or `purrr::map()` where some items may be entirely absent
-#'   or rarely consumed in the sample.
+#'   carry through to the subject-level predicted data for use by `distrib()`.
+#'   It is not used in model fitting.
+#' @param weekend_var Optional name of a 0/1 weekend (Fri-Sun) indicator. As in
+#'   MIXTRAN it enters both parts of the model; `distrib()` then averages
+#'   weekday and weekend usual intake (default weights 4/7 and 3/7).
+#' @param weight_var Optional name of the survey weight variable (MIXTRAN
+#'   `replicate_var`). Used in the likelihood and in `distrib()`.
+#' @param lambda Box-Cox lambda. If `NULL` (default) it is estimated by
+#'   maximum likelihood. A supplied value (including 0 for log) is held fixed.
+#' @param lambda_grid Grid used to find the starting value for lambda.
+#' @param min_positive Value used to replace zero intakes in the amount-only
+#'   model. Default `NULL` uses half the smallest positive intake (MIXTRAN).
+#' @param covariates_prob Covariates for the probability part (MIXTRAN
+#'   `covars_prob`). Defaults to `covariates`.
+#' @param include_seq Logical (default `TRUE`). Add a sequence indicator
+#'   `seq_num` (1 for recalls after the first) to both parts, equivalent to
+#'   passing `seq=day2` to MIXTRAN. Its effect is removed in `distrib()`.
+#' @param n_quad Number of adaptive Gauss-Hermite points used to integrate
+#'   over the probability random effect (two-part models). Default 21.
+#' @param start Optional `mixtran_fit` from a previous call (e.g. the
+#'   full-sample fit in BRR). Its parameter estimates are used as starting
+#'   values (MIXTRAN `start_val1-3`).
+#' @param skip_if_empty Logical (default `TRUE`). When the data are
+#'   insufficient to fit the requested model, warn and return `NULL`; when
+#'   `FALSE`, stop with an error instead.
 #' @param verbose Print model fitting progress
-#' @return A `mixtran_fit` object containing parameter estimates, predicted
-#'   values, and diagnostics needed for the DISTRIB step. Returns `NULL`
-#'   (with a warning) if `skip_if_empty = TRUE` and no positive intake values
-#'   are present.
+#' @param prob_engine,corr_engine,ghq_n_nodes Deprecated and ignored. Earlier
+#'   versions offered approximate engines (glmmPQL, profile likelihood over
+#'   rho, non-adaptive GHQ); all models are now fitted by weighted maximum
+#'   likelihood as in SAS.
+#' @return A `mixtran_fit` object, or `NULL` (with a warning) when
+#'   `skip_if_empty = TRUE` and the data are insufficient.
 #' @export
 mixtran <- function(data,
                     intake_var,
@@ -88,162 +88,134 @@ mixtran <- function(data,
                     weekend_var = NULL,
                     weight_var = NULL,
                     lambda = NULL,
-                    lambda_grid = seq(0.01, 1.0, by = 0.01),
+                    lambda_grid = seq(0.05, 1.0, by = 0.05),
                     min_positive = NULL,
-                    prob_engine = c("glmmPQL", "glmer"),
-                    corr_engine = c("profile_rho", "ghq"),
-                    ghq_n_nodes = 5L,
+                    covariates_prob = covariates,
+                    include_seq = TRUE,
+                    n_quad = 21L,
                     start = NULL,
                     skip_if_empty = TRUE,
-                    verbose = TRUE) {
+                    verbose = TRUE,
+                    prob_engine = NULL,
+                    corr_engine = NULL,
+                    ghq_n_nodes = NULL) {
 
-  prob_engine <- match.arg(prob_engine)
-  corr_engine <- match.arg(corr_engine)
+  if (!is.null(prob_engine) || !is.null(corr_engine) || !is.null(ghq_n_nodes)) {
+    warning("'prob_engine', 'corr_engine' and 'ghq_n_nodes' are deprecated and ",
+            "ignored: all models are fitted by weighted maximum likelihood, ",
+            "as MIXTRAN does with PROC NLMIXED.", call. = FALSE)
+  }
   if (!is.null(start) && !inherits(start, "mixtran_fit")) {
     stop("'start' must be a mixtran_fit object or NULL.")
   }
-
   model_type <- match.arg(model_type)
   data <- as.data.frame(data)
 
   # --- Validate inputs ---
-  required_vars <- c(intake_var, subject_var, repeat_var)
-  if (!is.null(weekend_var)) required_vars <- c(required_vars, weekend_var)
-  if (!is.null(weight_var)) required_vars <- c(required_vars, weight_var)
-  if (!is.null(covariates)) required_vars <- c(required_vars, covariates)
-  if (!is.null(subgroup_var)) required_vars <- c(required_vars, subgroup_var)
+  required_vars <- unique(c(intake_var, subject_var, repeat_var, weekend_var,
+                            weight_var, covariates, covariates_prob, subgroup_var))
   missing_vars <- setdiff(required_vars, names(data))
   if (length(missing_vars) > 0) {
     stop("Variables not found in data: ", paste(missing_vars, collapse = ", "))
   }
-
-  # --- Early exit when data are insufficient to fit the requested model ---
-  if (isTRUE(skip_if_empty)) {
-    vals <- data[[intake_var]]
-    subj  <- data[[subject_var]]
-    rpt   <- data[[repeat_var]]
-
-    if (model_type == "amount") {
-      if (!any(vals > 0, na.rm = TRUE)) {
-        warning(sprintf(
-          "Skipping '%s' (model_type = \"amount\"): no positive intake values found. ",
-          intake_var
-        ), "Returning NULL.", call. = FALSE)
-        return(NULL)
-      }
-    } else {
-      # Two-part models require at least one subject with 2+ positive recalls.
-      pos_recalls <- tapply(vals > 0 & !is.na(vals), subj, sum)
-      n_paired_pos <- sum(pos_recalls >= 2, na.rm = TRUE)
-      if (n_paired_pos == 0L) {
-        warning(sprintf(
-          "Skipping '%s' (model_type = \"%s\"): no subjects have 2+ positive recalls. ",
-          intake_var, model_type
-        ), "Returning NULL.", call. = FALSE)
-        return(NULL)
-      }
-      # Correlated model needs enough paired positive observations to estimate
-      # the between-effects correlation. With fewer than 10 such subjects the
-      # profile likelihood is unreliable and fit_twopart_corr() would fall back
-      # to rho = 0 anyway, but only after emitting a confusing "degenerate
-      # residuals" message. Return NULL early with a clear explanation.
-      if (model_type == "corr" && n_paired_pos < 10L) {
-        warning(sprintf(
-          "Skipping '%s' (model_type = \"corr\"): only %d subject(s) have positive intake on 2+ recall days (need >=10 to estimate correlation). Consider model_type = \"uncorr\".",
-          intake_var, n_paired_pos
-        ), " Returning NULL.", call. = FALSE)
-        return(NULL)
-      }
+  for (v in unique(c(covariates, covariates_prob, weekend_var, weight_var))) {
+    if (!is.numeric(data[[v]]) && !is.logical(data[[v]])) {
+      stop("Variable '", v, "' must be numeric (dummy-code categorical covariates).")
     }
   }
+  reserved <- c("seq_num", "weekend", "subject", "intake", "weight", "consumed")
+  if (any(c(covariates, covariates_prob) %in% reserved)) {
+    stop("Covariate names may not be any of: ", paste(reserved, collapse = ", "))
+  }
 
-  # --- Diagnostic: two-part model inappropriate for nearly ubiquitous foods ---
-  # When >90% of person-days have positive intake the probability sub-model is
-  # poorly identified (near-constant binary outcome), and the usual-intake
-  # distribution is better captured by an amount-only model. We do not
-  # auto-switch — just inform the user.
-  if (model_type %in% c("corr", "uncorr")) {
-    pct_pos <- mean(data[[intake_var]] > 0, na.rm = TRUE)
+  insufficient <- function(msg) {
+    if (isTRUE(skip_if_empty)) {
+      warning(msg, " Returning NULL.", call. = FALSE)
+      return(NULL)
+    }
+    stop(msg, call. = FALSE)
+  }
+
+  # --- Early exit when data are insufficient (MIXTRAN stops in these cases) ---
+  vals <- data[[intake_var]]
+  if (model_type == "amount") {
+    if (!any(vals > 0, na.rm = TRUE)) {
+      return(insufficient(sprintf(
+        "Skipping '%s' (model_type = \"amount\"): no positive intake values found.",
+        intake_var)))
+    }
+    n_rep <- sum(tapply(!is.na(vals), data[[subject_var]], sum) >= 2)
+    if (n_rep < 2L) {
+      return(insufficient(sprintf(
+        "Skipping '%s': fewer than two subjects have repeat recalls (MIXTRAN stops in this case).",
+        intake_var)))
+    }
+  } else {
+    pos_recalls  <- tapply(vals > 0 & !is.na(vals), data[[subject_var]], sum)
+    n_paired_pos <- sum(pos_recalls >= 2, na.rm = TRUE)
+    if (n_paired_pos < 2L) {
+      return(insufficient(sprintf(
+        "Skipping '%s' (model_type = \"%s\"): fewer than two subjects have 2+ positive recalls.",
+        intake_var, model_type)))
+    }
+    if (n_paired_pos <= 10L) {
+      warning(sprintf(
+        "Only %d subject(s) have 2+ positive recalls for '%s'; estimates might be unstable (MIXTRAN asks for at least 10).",
+        n_paired_pos, intake_var), call. = FALSE)
+    }
+    pct_pos <- mean(vals > 0, na.rm = TRUE)
     if (pct_pos > 0.9) {
       message(sprintf(
-        "Note: %.0f%% of person-days have positive '%s' intake. For nearly ubiquitous foods the two-part model may be inappropriate; model_type = \"amount\" is likely more suitable.",
-        pct_pos * 100, intake_var
-      ))
+        "Note: %.0f%% of person-days have positive '%s' intake; model_type = \"amount\" may be more suitable.",
+        pct_pos * 100, intake_var))
     }
   }
 
   # --- Prepare data ---
   prep <- prepare_mixtran_data(
-    data = data,
-    intake_var = intake_var,
-    subject_var = subject_var,
-    repeat_var = repeat_var,
-    covariates = covariates,
-    weekend_var = weekend_var,
-    weight_var = weight_var,
-    min_positive = min_positive,
-    model_type = model_type
+    data = data, intake_var = intake_var, subject_var = subject_var,
+    repeat_var = repeat_var, covariates = covariates,
+    covariates_prob = covariates_prob, weekend_var = weekend_var,
+    weight_var = weight_var, min_positive = min_positive,
+    model_type = model_type, include_seq = include_seq, verbose = verbose
   )
+  if (is.null(prep)) return(insufficient(sprintf(
+    "Skipping '%s': no usable records after removing missing values.", intake_var)))
 
-  # prepare_mixtran_data() returns NULL when data are insufficient
-  if (is.null(prep)) return(NULL)
+  result <- fit_nci_model(prep, model_type = model_type, lambda = lambda,
+                          lambda_grid = lambda_grid, n_quad = n_quad,
+                          start = start, verbose = verbose)
 
-  # --- Find optimal lambda if not provided ---
-  if (is.null(lambda)) {
-    if (verbose) message("Finding optimal Box-Cox lambda...")
-    y_pos <- prep$data$intake[prep$data$intake > 0]
-    bc_result <- find_optimal_lambda(y_pos, lambda_grid = lambda_grid)
-    lambda <- bc_result$lambda
-    if (verbose) {
-      message(sprintf("  Raw optimal lambda: %.3f", bc_result$lambda_raw))
-      if (bc_result$used_log) message("  Using log transform (lambda < 0.15)")
-      message(sprintf("  Final lambda: %.3f", lambda))
-    }
-  }
-
-  # --- Fit model ---
-  if (model_type == "amount") {
-    result <- fit_amount_model(prep, lambda, verbose, start = start)
-  } else if (model_type == "uncorr") {
-    result <- fit_twopart_uncorr(prep, lambda, verbose,
-                                  prob_engine = prob_engine, start = start)
-  } else {
-    if (corr_engine == "ghq") {
-      result <- fit_twopart_corr_ghq(prep, lambda, verbose,
-                                      prob_engine = prob_engine,
-                                      n_nodes = ghq_n_nodes,
-                                      start = start)
-    } else {
-      result <- fit_twopart_corr(prep, lambda, verbose,
-                                  prob_engine = prob_engine, start = start)
-    }
-  }
-  result$prob_engine  <- prob_engine
-  result$corr_engine  <- if (model_type == "corr") corr_engine else NULL
-
-  # Merge subgroup variable back into predicted via a subject-level join.
-  # prepare_mixtran_data() renames subject_var -> "subject", so match on that.
+  # Carry the subgroup variable through to the subject-level predictions
   if (!is.null(subgroup_var)) {
-    subj_lookup <- unique(data[, c(subject_var, subgroup_var), drop = FALSE])
-    names(subj_lookup)[names(subj_lookup) == subject_var] <- "subject"
-    result$predicted <- merge(result$predicted, subj_lookup,
-                              by = "subject", all.x = TRUE)
+    lk <- data[!duplicated(data[[subject_var]]), c(subject_var, subgroup_var), drop = FALSE]
+    n_distinct <- tapply(data[[subgroup_var]], data[[subject_var]],
+                         function(z) length(unique(z)))
+    if (any(n_distinct > 1, na.rm = TRUE)) {
+      warning("'", subgroup_var, "' varies within subject; using each subject's first value.",
+              call. = FALSE)
+    }
+    result$predicted[[subgroup_var]] <-
+      lk[[subgroup_var]][match(result$predicted$subject, lk[[subject_var]])]
   }
 
-  result$lambda <- lambda
-  result$model_type <- model_type
-  result$intake_var <- intake_var
-  result$subject_var <- subject_var
-  result$covariates <- covariates
-  result$subgroup_var <- subgroup_var
-  result$weekend_var <- weekend_var
-  result$n_subjects <- prep$n_subjects
-  result$n_recalls <- nrow(prep$data)
-  result$n_positive <- sum(prep$data$intake > 0)
-  result$pct_consuming <- result$n_positive / result$n_recalls * 100
+  result$model_type    <- model_type
+  result$intake_var    <- intake_var
+  result$subject_var   <- subject_var
+  result$covariates    <- covariates
+  result$covariates_prob <- if (model_type == "amount") NULL else covariates_prob
+  result$subgroup_var  <- subgroup_var
+  result$weekend_var   <- weekend_var
+  result$weight_var    <- weight_var
+  result$n_subjects    <- prep$n_subjects
+  result$n_recalls     <- nrow(prep$data)
+  result$n_positive    <- prep$n_positive_raw
+  result$pct_consuming <- prep$n_positive_raw / nrow(prep$data) * 100
+  result$min_amt       <- prep$min_amt
+  result$min_pos_raw   <- prep$min_pos_raw
 
   class(result) <- "mixtran_fit"
-  return(result)
+  result
 }
 
 
@@ -251,94 +223,73 @@ mixtran <- function(data,
 #' @keywords internal
 prepare_mixtran_data <- function(data, intake_var, subject_var, repeat_var,
                                  covariates, weekend_var, weight_var,
-                                 min_positive, model_type) {
+                                 min_positive, model_type,
+                                 covariates_prob = covariates,
+                                 include_seq = TRUE, verbose = TRUE) {
 
-  # Build working dataset
   work <- data.frame(
-    subject = data[[subject_var]],
+    subject    = data[[subject_var]],
     repeat_num = data[[repeat_var]],
-    intake = data[[intake_var]],
+    intake     = data[[intake_var]],
     stringsAsFactors = FALSE
   )
+  if (!is.null(weekend_var)) work$weekend <- as.numeric(data[[weekend_var]])
+  for (cv in unique(c(covariates, covariates_prob))) work[[cv]] <- as.numeric(data[[cv]])
+  work$weight <- if (!is.null(weight_var)) as.numeric(data[[weight_var]]) else 1
 
-  # Add covariates
-  cov_names <- character(0)
-  if (!is.null(weekend_var)) {
-    work$weekend <- as.numeric(data[[weekend_var]])
-    cov_names <- c(cov_names, "weekend")
+  # NLMIXED drops records with missing values in any model variable
+  model_cols <- intersect(c("intake", "repeat_num", "weekend", "weight",
+                            covariates, covariates_prob), names(work))
+  keep <- stats::complete.cases(work[, model_cols, drop = FALSE])
+  if (any(!keep) && verbose) {
+    message(sprintf("  Removing %d record(s) with missing intake, weight or covariates.",
+                    sum(!keep)))
   }
-  if (!is.null(covariates)) {
-    for (cv in covariates) {
-      work[[cv]] <- data[[cv]]
-      cov_names <- c(cov_names, cv)
-    }
-  }
+  work <- work[keep, , drop = FALSE]
+  if (nrow(work) == 0L) return(NULL)
+  if (any(work$intake < 0)) stop("Intake values must be non-negative.")
+  if (any(work$weight < 0)) stop("Weights must be non-negative.")
 
-  # Survey weights
-  if (!is.null(weight_var)) {
-    work$weight <- data[[weight_var]]
-  } else {
-    work$weight <- 1
-  }
+  # Sort by subject and repeat (MIXTRAN: proc sort by subject repeat)
+  work <- work[order(work$subject, work$repeat_num), , drop = FALSE]
+  rownames(work) <- NULL
 
-  # Add sequence indicator (NCI convention: first recall = 0, subsequent = 1)
-  work$seq_num <- as.numeric(work$repeat_num > 1)
-  cov_names <- c("seq_num", cov_names)
-
-  # Handle zeros for amount model (NCI convention: replace with half minimum)
-  if (model_type == "amount") {
-    if (any(work$intake == 0, na.rm = TRUE)) {
-      if (is.null(min_positive)) {
-        min_pos <- min(work$intake[work$intake > 0], na.rm = TRUE)
-        if (!is.finite(min_pos)) {
-          warning("No positive intake values found for amount model. ",
-                  "All observations are zero or missing; returning NULL.",
-                  call. = FALSE)
-          return(NULL)
-        }
-        min_positive <- min_pos / 2
-      }
-      message(sprintf("  Replacing %d zero values with %.4f (half-min)",
-                      sum(work$intake == 0, na.rm = TRUE), min_positive))
-      work$intake[work$intake == 0] <- min_positive
-    }
+  wt_var <- tapply(work$weight, work$subject, function(z) length(unique(z)))
+  if (any(wt_var > 1)) {
+    warning("The weight varies within subject; each subject's first-record weight ",
+            "is used (as with the NLMIXED REPLICATE statement).", call. = FALSE)
   }
 
-  # Create consumption indicator for two-part models
+  # Sequence indicator (MIXTRAN seq=): 0 for the first recall, 1 afterwards
+  if (include_seq) work$seq_num <- as.numeric(work$repeat_num > 1)
+
+  n_positive_raw <- sum(work$intake > 0)
+  min_pos <- if (n_positive_raw > 0) min(work$intake[work$intake > 0]) else NA_real_
+
+  # Amount-only model: zeros -> half the smallest positive amount (MIXTRAN)
+  if (model_type == "amount" && any(work$intake == 0)) {
+    if (is.null(min_positive)) min_positive <- min_pos / 2
+    if (verbose) message(sprintf("  Replacing %d zero values with %.6g (half-min)",
+                                 sum(work$intake == 0), min_positive))
+    work$intake[work$intake == 0] <- min_positive
+  }
   work$consumed <- as.numeric(work$intake > 0)
 
-  # Remove rows with missing intake
-  work <- work[!is.na(work$intake), ]
+  # min_amt passed to DISTRIB: PROC UNIVARIATE minimum of the response in the
+  # MIXTRAN working data (zeros already replaced for amount models; zeros set
+  # to missing for two-part models).
+  min_amt <- min(work$intake[work$intake > 0])
 
-  # Sort by subject and repeat (required for mixed model)
-  work <- work[order(work$subject, work$repeat_num), ]
-
-  # Diagnostics
-  n_subjects <- length(unique(work$subject))
-  recalls_per_subject <- table(work$subject)
-  n_with_2plus <- sum(recalls_per_subject >= 2)
-
-  if (model_type != "amount") {
-    # For two-part models, need subjects with 2+ positive recalls
-    pos_per_subject <- tapply(work$consumed, work$subject, sum)
-    n_with_2pos <- sum(pos_per_subject >= 2, na.rm = TRUE)
-    if (n_with_2pos == 0) {
-      warning("No subjects with 2+ positive recalls. Cannot fit two-part model. ",
-              "Returning NULL.", call. = FALSE)
-      return(NULL)
-    }
-    if (n_with_2pos <= 10) {
-      warning("Only ", n_with_2pos, " subjects with 2+ positive recalls. ",
-              "Results may be unstable.")
-    }
-  }
-
+  base_covs <- c(if (include_seq) "seq_num", if (!is.null(weekend_var)) "weekend")
   list(
     data = work,
-    cov_names = cov_names,
-    n_subjects = n_subjects,
-    n_with_2plus = n_with_2plus,
-    min_positive = min_positive
+    cov_names = c(base_covs, covariates),
+    cov_names_prob = c(base_covs, covariates_prob),
+    n_subjects = length(unique(work$subject)),
+    n_positive_raw = n_positive_raw,
+    min_positive = min_positive,
+    min_amt = min_amt,
+    min_pos_raw = min_pos
   )
 }
 
@@ -346,8 +297,7 @@ prepare_mixtran_data <- function(data, intake_var, subject_var, repeat_var,
 #' Drop covariates that are constant within a data slice
 #'
 #' A covariate with fewer than 2 distinct non-NA values produces a singular
-#' design matrix. This helper silently removes such columns and emits a
-#' message() naming each dropped covariate so callers are aware.
+#' design matrix. This helper removes such columns and emits a message.
 #'
 #' @param cov_names Character vector of candidate covariate names.
 #' @param data Data frame to check values against.
@@ -368,896 +318,195 @@ drop_constant_covs <- function(cov_names, data) {
 }
 
 
-#' Run nlme::lme with optim; on Singularity/MEEM/backsolve error retry with nlminb
-#'
-#' Both the REML and ML nlme::lme() calls can throw uncaught MEEM() /
-#' backsolve() errors when the data are near-singular and opt = "optim" is used.
-#' This wrapper catches those specific errors and retries with opt = "nlminb".
-#'
-#' @param fixed,random,data,method,start,weights Arguments forwarded to nlme::lme().
-#' @param verbose Logical; if TRUE emit a message when the nlminb retry fires.
-#' @return An nlme "lme" fit object.
+#' Build the design list used by the likelihood engine
 #' @keywords internal
-.lme_robust <- function(fixed, random, data, method,
-                        start = NULL, weights = NULL, verbose = FALSE) {
-  # Check whether the installed nlme version supports the `start` parameter
-  # (added in nlme >= 3.1-163)
-  nlme_has_start <- "start" %in% names(formals(nlme::lme))
-  use_start <- !is.null(start) && nlme_has_start
-
-  # Helper: call lme() from a function whose enclosing environment is
-  # parented by nlme's namespace.
-  #
-  # WHY THIS IS NECESSARY:
-  # nlme's lme.formula() captures the call via match.call() and later
-  # re-evaluates it with eval(Call, parent.frame()).  parent.frame()
-  # returns the *call frame* of the caller — and R's eval(expr, envir)
-  # does NOT change what parent.frame() returns.  So the previous approach
-  # of eval(cl, envir = <nlme-parented env>) failed: parent.frame()
-  # still returned call_lme's frame (in nciusual's namespace), which
-  # lacks nlme's unexported helpers like base_lme.
-  #
-  # The fix: create an actual *function* whose enclosing environment is
-  # parented by asNamespace("nlme"), then call it.  Now parent.frame()
-  # from within lme.formula() → lme() generic → this wrapper function,
-  # and symbol lookups walk: wrapper's frame → wrapper_env → nlme NS,
-  # which contains all unexported helpers.
-  call_lme <- function(ctl) {
-    # Collect arguments into an environment parented by nlme's namespace
-    args <- list(
-      fixed   = fixed,
-      random  = random,
-      data    = data,
-      method  = method,
-      control = ctl
-    )
-    if (use_start)          args$start   <- start
-    if (!is.null(weights))  args$weights <- weights
-
-    wrapper_env <- list2env(args, parent = asNamespace("nlme"))
-
-    # Build a function whose body is lme(fixed=fixed, random=random, ...)
-    # and whose enclosing environment is wrapper_env.  Calling this function
-    # makes parent.frame() from within lme.formula() resolve through
-    # wrapper_env → asNamespace("nlme"), finding all internal helpers.
-    arg_names <- names(args)
-    call_expr <- as.call(c(
-      quote(lme),
-      stats::setNames(lapply(arg_names, as.symbol), arg_names)
-    ))
-    wrapper <- function() {}
-    body(wrapper) <- call_expr
-    environment(wrapper) <- wrapper_env
-    wrapper()
+.nci_design <- function(work, prob_covs, amt_covs, lambda_fixed, n_quad,
+                        has_prob = !is.null(prob_covs)) {
+  id  <- match(work$subject, unique(work$subject))
+  N   <- max(id)
+  pos <- work$consumed == 1
+  X2  <- cbind(1, as.matrix(work[pos, amt_covs, drop = FALSE]))
+  colnames(X2) <- c("(Intercept)", as.character(amt_covs))
+  X1 <- NULL
+  if (has_prob) {
+    X1 <- cbind(1, as.matrix(work[, prob_covs, drop = FALSE]))
+    colnames(X1) <- c("(Intercept)", as.character(prob_covs))
   }
-
-  ctl_optim <- nlme::lmeControl(
-    maxIter = 500, msMaxIter = 500, opt = "optim", returnObject = TRUE
-  )
-  tryCatch(
-    call_lme(ctl_optim),
-    error = function(e) {
-      if (grepl("Singularity|MEEM|backsolve", conditionMessage(e),
-                ignore.case = TRUE)) {
-        if (verbose) message(sprintf(
-          "  %s Singularity/MEEM detected – retrying with opt = \"nlminb\"...",
-          method))
-        ctl_nlminb <- nlme::lmeControl(
-          maxIter = 500, msMaxIter = 500, opt = "nlminb", returnObject = TRUE
-        )
-        tryCatch(
-          call_lme(ctl_nlminb),
-          error = function(e2) {
-            stop(sprintf(
-              "nlme::lme() failed with both optim and nlminb (method = %s): %s",
-              method, conditionMessage(e2)
-            ))
-          }
-        )
-      } else {
-        stop(e)
-      }
-    }
+  w <- work$weight[!duplicated(id)]
+  list(
+    N = N, id = id, w = w, sum_w = sum(w),
+    yn = work$consumed, sgn = 2 * work$consumed - 1,
+    X1 = X1, X2 = X2,
+    y_pos = work$intake[pos], logy_pos = log(work$intake[pos]),
+    id_pos = id[pos], uid_pos = sort(unique(id[pos])),
+    lambda_fixed = lambda_fixed, n_quad = as.integer(n_quad)
   )
 }
 
 
-#' Fit amount-only model (for ubiquitously consumed nutrients)
-#'
-#' Model: T(Y_ij) = X_ij'beta + u_i + eps_ij
-#'   where u_i ~ N(0, sigma2_b) and eps_ij ~ N(0, sigma2_w)
-#'
+#' Fit the MIXTRAN model by weighted maximum likelihood
 #' @keywords internal
-fit_amount_model <- function(prep, lambda, verbose, start = NULL) {
-
+fit_nci_model <- function(prep, model_type, lambda = NULL,
+                          lambda_grid = seq(0.05, 1, by = 0.05),
+                          n_quad = 21L, start = NULL, verbose = TRUE) {
   work <- prep$data
-  cov_names <- prep$cov_names
+  pos  <- work$consumed == 1
 
-  # Apply Box-Cox transform
-  work$t_intake <- boxcox_transform(work$intake, lambda)
+  amt_covs  <- drop_constant_covs(prep$cov_names, work[pos, , drop = FALSE])
+  prob_covs <- if (model_type == "amount") NULL else
+    drop_constant_covs(prep$cov_names_prob, work)
 
-  # Drop covariates that are constant within this data slice (would produce a
-  # singular design matrix and an uncaught error from nlme::lme).
-  cov_names <- drop_constant_covs(cov_names, work)
+  d <- .nci_design(work, prob_covs, amt_covs,
+                   lambda_fixed = if (is.null(lambda)) NA_real_ else lambda,
+                   n_quad = n_quad, has_prob = model_type != "amount")
+  row_w <- d$w[d$id] / mean(d$w)   # normalised: GLM/LM start fits only
 
-  # Build formula
-  # Fixed effects: intercept + covariates
-  if (length(cov_names) > 0) {
-    fixed_formula <- stats::as.formula(
-      paste("t_intake ~", paste(cov_names, collapse = " + "))
-    )
-  } else {
-    fixed_formula <- stats::as.formula("t_intake ~ 1")
+  # --- Starting values (MIXTRAN: TRANSREG grid for lambda, GENMOD fits) ---
+  y_pos <- d$y_pos
+  if (is.null(lambda)) {
+    lam0 <- if (length(amt_covs) > 0) {
+      find_optimal_lambda(y_pos, lambda_grid = lambda_grid,
+                          covariates = as.matrix(work[pos, amt_covs, drop = FALSE]),
+                          use_log_rule = FALSE)$lambda
+    } else 0.4
+  } else lam0 <- lambda
+  z0  <- boxcox_transform(y_pos, lam0)
+  lmf <- stats::lm.wfit(d$X2, z0, w = row_w[pos])
+  v0  <- sum(row_w[pos] * lmf$residuals^2) / sum(row_w[pos])
+  p_amt <- c(stats::setNames(lmf$coefficients, paste0("A.", colnames(d$X2))),
+             A_LOGSDE = 0.5 * log(v0 / 2), A_LOGSDU2 = 0.5 * log(v0 / 2))
+  p_amt[is.na(p_amt)] <- 0
+  if (is.null(lambda)) p_amt["A_LAMBDA"] <- lam0
+
+  p_prob <- NULL
+  if (model_type != "amount") {
+    gf <- suppressWarnings(stats::glm.fit(d$X1, d$yn, weights = row_w,
+                                          family = stats::binomial()))
+    p_prob <- c(stats::setNames(gf$coefficients, paste0("P.", colnames(d$X1))),
+                P_LOGSDU1 = 0.5)
+    p_prob[is.na(p_prob)] <- 0
   }
 
-  # Fit linear mixed model using nlme::lme
-  # Random intercept for subject captures between-person variation
-  if (verbose) message("Fitting amount-only model with nlme::lme()...")
-
-  # Starting values from a prior fit improve convergence in BRR replicates
-  lme_start <- NULL
-  if (!is.null(start) && !is.null(start$beta)) {
-    beta_names <- names(stats::model.matrix(fixed_formula, data = work[1, , drop = FALSE]))
-    shared <- intersect(names(start$beta), beta_names)
-    if (length(shared) > 0) {
-      sv <- rep(0, length(beta_names))
-      names(sv) <- beta_names
-      sv[shared] <- start$beta[shared]
-      lme_start <- list(fixed = sv)
+  use_start <- function(p0) {
+    if (!is.null(start) && !is.null(start$theta)) {
+      sh <- intersect(names(p0), names(start$theta))
+      p0[sh] <- start$theta[sh]
     }
+    p0
   }
 
-  wts <- if (any(work$weight != 1)) nlme::varFixed(~ 1/weight) else NULL
+  if (verbose) {
+    message(sprintf("Fitting %s model by weighted maximum likelihood (%d subjects)...",
+                    model_type, d$N))
+  }
 
-  fit <- tryCatch({
-    # Primary: REML with optim; retries with nlminb on Singularity/MEEM/backsolve
-    .lme_robust(
-      fixed = fixed_formula, random = ~ 1 | subject, data = work,
-      method = "REML", start = lme_start, weights = wts, verbose = verbose
-    )
-  }, error = function(e) {
-    # Fall back to ML if REML fails for any other reason
-    if (verbose) message("  REML failed, trying ML...")
-    tryCatch(
-      .lme_robust(
-        fixed = fixed_formula, random = ~ 1 | subject, data = work,
-        method = "ML", start = NULL, weights = wts, verbose = verbose
-      ),
-      error = function(e2) {
-        stop(sprintf(
-          "nlme::lme() failed for both REML and ML in fit_amount_model(): %s",
-          conditionMessage(e2)
-        ))
-      }
-    )
-  })
+  # --- Amount part (amount-only model, or the amount part of the two-part model) ---
+  fit_a <- .nlmixed_optim(use_start(p_amt), d, "amount", verbose)
+  theta <- fit_a$par
+  conv  <- fit_a$converged
+  m2ll  <- 2 * d$sum_w * fit_a$value
 
-  # Extract variance components
-  vc <- nlme::VarCorr(fit)
-  sigma2_b <- as.numeric(vc[1, "Variance"])  # Between-person
-  sigma2_w <- as.numeric(vc[2, "Variance"])  # Within-person (residual)
+  if (model_type != "amount") {
+    fit_p <- .nlmixed_optim(use_start(p_prob), d, "prob", verbose)
+    theta <- c(fit_p$par, theta)
+    conv  <- conv && fit_p$converged
+    m2ll  <- m2ll + 2 * d$sum_w * fit_p$value
+    theta_uncorr <- theta
+    m2ll_uncorr  <- m2ll
+  }
 
-  # Fixed effects
-  beta <- nlme::fixef(fit)
+  if (model_type == "corr") {
+    p_corr <- use_start(c(theta, Z_U = 0))
+    fit_c  <- .nlmixed_optim(p_corr, d, "corr", verbose)
+    theta  <- fit_c$par
+    conv   <- fit_c$converged
+    m2ll   <- 2 * d$sum_w * fit_c$value
+  }
 
-  # Predicted values (linear predictor without random effect)
-  # This is X_i'beta for each subject, used by DISTRIB
-  # Use only unique subject-level predictions (average over covariates)
-  pred_df <- work
-  pred_df$linpred <- stats::predict(fit, level = 0)  # population-level
-  pred_df$ranef <- stats::predict(fit, level = 1) - pred_df$linpred  # subject-level RE
+  q <- .unpack(theta, d)
+  alpha <- if (model_type == "amount") NULL else
+    stats::setNames(as.numeric(q$alpha), colnames(d$X1))
+  beta  <- stats::setNames(as.numeric(q$beta), colnames(d$X2))
+  lam   <- q$lambda
 
-  if (sigma2_b <= 0 || !is.finite(sigma2_b)) {
-    warning("Between-person variance (sigma2_b) is zero or non-finite; ",
-            "var_ratio set to Inf. Results may be unreliable (consider checking ",
-            "sample size and whether all subjects have the same intake).",
+  # --- Empirical Bayes estimates of the random effects ---
+  if (model_type == "amount") {
+    re <- .ebe(theta, d, "amount")
+  } else if (model_type == "uncorr") {
+    re <- list(u1 = .ebe(theta, d, "prob")$u1,
+               u2 = { r <- .ebe(theta, d, "amount")$u2
+                      r[!(seq_len(d$N) %in% d$uid_pos)] <- 0; r })
+  } else {
+    re <- .ebe(theta, d, "corr")
+  }
+
+  # --- Subject-level predictions for DISTRIB (MIXTRAN _pred data set) ---
+  # Linear predictors from each subject's first record with the sequence
+  # effect removed (seq = 0); with a weekend variable, both weekday (_0, the
+  # default columns) and weekend (_1) versions, as MIXTRAN's x1b1_0/x1b1_1.
+  first <- work[!duplicated(work$subject), , drop = FALSE]
+  xb <- function(coef, covs, wk) {
+    if (is.null(coef)) return(rep(NA_real_, nrow(first)))
+    df <- first
+    if ("seq_num" %in% names(df)) df$seq_num <- 0
+    if (!is.null(wk) && "weekend" %in% names(df)) df$weekend <- wk
+    as.numeric(cbind(1, as.matrix(df[, covs, drop = FALSE])) %*% coef)
+  }
+  has_wk <- "weekend" %in% c(amt_covs, prob_covs)
+  predicted <- data.frame(subject = first$subject, weight = first$weight,
+                          stringsAsFactors = FALSE)
+  predicted$x1b1 <- xb(alpha, prob_covs, if (has_wk) 0 else NULL)
+  predicted$x2b2 <- xb(beta,  amt_covs,  if (has_wk) 0 else NULL)
+  if (has_wk) {
+    predicted$x1b1_1 <- xb(alpha, prob_covs, 1)
+    predicted$x2b2_1 <- xb(beta,  amt_covs,  1)
+  }
+  predicted$u1 <- re$u1
+  predicted$u2 <- re$u2
+
+  if (verbose) {
+    message(sprintf("  lambda = %.4f%s", lam, if (is.null(lambda)) " (estimated)" else " (fixed)"))
+    if (model_type == "amount") {
+      message(sprintf("  var_u2 (between) = %.4f   var_e (within) = %.4f", q$su2, q$se2))
+    } else {
+      message(sprintf("  var_u1 = %.4f   var_u2 = %.4f   var_e = %.4f   rho = %.4f",
+                      q$sig1^2, q$su2, q$se2, q$rho))
+    }
+    message(sprintf("  -2 log likelihood (weighted) = %.6g", m2ll))
+  }
+  if (!conv) {
+    warning("The likelihood maximisation did not fully converge; check the estimates.",
             call. = FALSE)
   }
-  var_ratio <- if (is.finite(sigma2_b) && sigma2_b > 0) sigma2_w / sigma2_b else Inf
 
-  if (verbose) {
-    message(sprintf("  Between-person variance (sigma2_b): %.4f", sigma2_b))
-    message(sprintf("  Within-person variance  (sigma2_w): %.4f", sigma2_w))
-    message(sprintf("  Variance ratio (within/between):    %.2f", var_ratio))
-    message(sprintf("  Fixed effects:"))
-    for (nm in names(beta)) {
-      message(sprintf("    %s: %.4f", nm, beta[nm]))
-    }
-  }
-
-  list(
-    model_fit = fit,
-    beta = beta,
-    sigma2_b = sigma2_b,
-    sigma2_w = sigma2_w,
-    var_ratio = var_ratio,
-    predicted = pred_df,
-    converged = TRUE
-  )
-}
-
-
-#' Fit two-part uncorrelated model (for episodically consumed foods)
-#'
-#' Part 1 (probability): logit(P(Y>0)) = Z'alpha + v1_i
-#' Part 2 (amount|consumed): T(Y|Y>0) = X'beta + v2_i + eps
-#' Assumes Cov(v1_i, v2_i) = 0
-#'
-#' @keywords internal
-fit_twopart_uncorr <- function(prep, lambda, verbose,
-                                prob_engine = "glmmPQL", start = NULL) {
-
-  work <- prep$data
-  cov_names <- prep$cov_names
-
-  if (verbose) {
-    eng_label <- if (prob_engine == "glmer") "lme4::glmer" else "MASS::glmmPQL"
-    message(sprintf("Fitting two-part uncorrelated model (prob engine: %s)...", eng_label))
-  }
-
-  # --- Part 1: Probability model (logistic GLMM) ---
-  if (verbose) message("  Part 1: Probability of consumption...")
-
-  # Drop covariates that are constant in this data slice (all rows for prob model)
-  prob_cov_names <- drop_constant_covs(cov_names, work)
-
-  if (length(prob_cov_names) > 0) {
-    prob_formula_fixed <- stats::as.formula(
-      paste("consumed ~", paste(prob_cov_names, collapse = " + "))
-    )
-  } else {
-    prob_formula_fixed <- stats::as.formula("consumed ~ 1")
-  }
-
-  prob_fit <- NULL
-  alpha <- NULL
-  sigma2_v1 <- NA
-
-  if (prob_engine == "glmer") {
-    # --- lme4::glmer: full ML via Laplace approximation ---
-    if (!requireNamespace("lme4", quietly = TRUE)) {
-      stop("lme4 is required for prob_engine='glmer'. Install with: install.packages('lme4')")
-    }
-    glmer_formula <- stats::as.formula(
-      paste("consumed ~",
-            paste(if (length(prob_cov_names) > 0) prob_cov_names else "1", collapse = " + "),
-            "+ (1 | subject)")
-    )
-    prob_fit <- tryCatch({
-      lme4::glmer(
-        formula = glmer_formula,
-        family  = stats::binomial(link = "logit"),
-        data    = work,
-        control = lme4::glmerControl(
-          optimizer = "bobyqa",
-          optCtrl   = list(maxfun = 2e5)
-        )
-      )
-    }, warning = function(w) {
-      # glmer issues convergence warnings; catch and return the fit anyway
-      withCallingHandlers(
-        lme4::glmer(
-          formula = glmer_formula,
-          family  = stats::binomial(link = "logit"),
-          data    = work,
-          control = lme4::glmerControl(
-            optimizer = "bobyqa",
-            optCtrl   = list(maxfun = 2e5)
-          )
-        ),
-        warning = function(w) invokeRestart("muffleWarning")
-      )
-    }, error = function(e) {
-      if (verbose) message("    glmer failed: ", e$message,
-                           "\n    Falling back to glmmPQL...")
-      NULL
-    })
-
-    if (!is.null(prob_fit)) {
-      alpha <- lme4::fixef(prob_fit)
-      sigma2_v1 <- as.numeric(lme4::VarCorr(prob_fit)$subject[1, 1])
-      attr(prob_fit, ".engine") <- "glmer"
-      if (verbose) {
-        message(sprintf("    Between-person variance (prob, glmer): %.4f", sigma2_v1))
-      }
-    }
-    # Fall through to glmmPQL if glmer returned NULL
-    if (is.null(prob_fit)) prob_engine <- "glmmPQL"
-  }
-
-  if (prob_engine == "glmmPQL") {
-    # --- MASS::glmmPQL: penalized quasi-likelihood (faster, default) ---
-    prob_fit <- tryCatch({
-      MASS::glmmPQL(
-        fixed   = prob_formula_fixed,
-        random  = ~ 1 | subject,
-        family  = stats::binomial(link = "logit"),
-        data    = work,
-        verbose = FALSE
-      )
-    }, error = function(e) {
-      if (verbose) message("    glmmPQL failed: ", e$message)
-      NULL
-    })
-
-    if (!is.null(prob_fit)) {
-      attr(prob_fit, ".engine") <- "glmmPQL"
-      alpha <- nlme::fixef(prob_fit)
-      vc_prob <- nlme::VarCorr(prob_fit)
-      sigma2_v1 <- as.numeric(vc_prob[1, "Variance"])
-      if (verbose) {
-        message(sprintf("    Between-person variance (prob, PQL): %.4f", sigma2_v1))
-      }
-    }
-  }
-
-  if (is.null(prob_fit)) {
-    warning("Probability model failed to converge. Returning partial results.")
-  }
-
-  # --- Part 2: Amount model (conditional on consumption) ---
-  if (verbose) message("  Part 2: Amount consumed (conditional)...")
-
-  work_pos <- work[work$consumed == 1, ]
-  work_pos$t_intake <- boxcox_transform(work_pos$intake, lambda)
-
-  # Drop covariates that are constant in the positive-only slice
-  amt_cov_names <- drop_constant_covs(cov_names, work_pos)
-
-  if (length(amt_cov_names) > 0) {
-    amt_formula <- stats::as.formula(
-      paste("t_intake ~", paste(amt_cov_names, collapse = " + "))
-    )
-  } else {
-    amt_formula <- stats::as.formula("t_intake ~ 1")
-  }
-
-  # Starting values for amount fixed effects from prior fit
-  amt_start <- NULL
-  if (!is.null(start) && !is.null(start$beta)) {
-    beta_names <- names(stats::model.matrix(amt_formula, data = work_pos[1, , drop = FALSE]))
-    shared <- intersect(names(start$beta), beta_names)
-    if (length(shared) > 0) {
-      sv <- rep(0, length(beta_names))
-      names(sv) <- beta_names
-      sv[shared] <- start$beta[shared]
-      amt_start <- list(fixed = sv)
-    }
-  }
-
-  amt_wts <- if (any(work_pos$weight != 1)) nlme::varFixed(~ 1/weight) else NULL
-
-  amt_fit <- tryCatch({
-    # Primary: REML with optim; retries with nlminb on Singularity/MEEM/backsolve
-    .lme_robust(
-      fixed = amt_formula, random = ~ 1 | subject, data = work_pos,
-      method = "REML", start = amt_start, weights = amt_wts, verbose = verbose
-    )
-  }, error = function(e) {
-    if (verbose) message("    Amount model REML failed, trying ML...")
-    tryCatch(
-      .lme_robust(
-        fixed = amt_formula, random = ~ 1 | subject, data = work_pos,
-        method = "ML", start = NULL, weights = amt_wts, verbose = verbose
-      ),
-      error = function(e2) {
-        stop(sprintf(
-          "nlme::lme() failed for both REML and ML in fit_twopart_uncorr() amount sub-model: %s",
-          conditionMessage(e2)
-        ))
-      }
-    )
-  })
-
-  beta <- nlme::fixef(amt_fit)
-  vc_amt <- nlme::VarCorr(amt_fit)
-  sigma2_v2 <- as.numeric(vc_amt[1, "Variance"])
-  sigma2_e <- as.numeric(vc_amt[2, "Variance"])
-
-  if (verbose) {
-    message(sprintf("    Between-person variance (amount): %.4f", sigma2_v2))
-    message(sprintf("    Within-person variance  (amount): %.4f", sigma2_e))
-  }
-
-  # Predicted values (population-level, i.e. without subject random effects)
-  pred_df <- work
-  pred_df$prob_linpred <- if (!is.null(prob_fit)) {
-    prob_popn_predict(prob_fit, newdata = work)
-  } else {
-    NA_real_
-  }
-
-  pred_df$amt_linpred <- NA_real_
-  pred_df$amt_linpred[pred_df$consumed == 1] <- stats::predict(amt_fit, level = 0)
-
-  list(
-    prob_fit  = prob_fit,
-    amt_fit   = amt_fit,
-    alpha     = alpha,
+  out <- list(
+    lambda    = lam,
+    lambda_estimated = is.null(lambda),
     beta      = beta,
-    sigma2_v1 = sigma2_v1,
-    sigma2_v2 = sigma2_v2,
-    sigma2_e  = sigma2_e,
-    rho       = 0,  # uncorrelated by definition
-    predicted = pred_df,
-    converged = !is.null(prob_fit)
+    alpha     = alpha,
+    theta     = theta,
+    m2loglik  = m2ll,
+    converged = conv,
+    predicted = predicted,
+    data      = work,
+    prob_covs_used = prob_covs,
+    amt_covs_used  = amt_covs,
+    n_quad    = n_quad
   )
-}
-
-
-# ---------------------------------------------------------------------------
-# Engine-agnostic helpers for probability sub-model
-# ---------------------------------------------------------------------------
-
-#' Population-level predictions from prob model (no random effects)
-#' Works for both glmmPQL (nlme) and glmer (lme4) fits.
-#' @keywords internal
-prob_popn_predict <- function(prob_fit, newdata) {
-  if (inherits(prob_fit, "glmerMod")) {
-    stats::predict(prob_fit, newdata = newdata, re.form = NA, type = "link")
+  if (model_type == "amount") {
+    out$sigma2_b  <- q$su2
+    out$sigma2_w  <- q$se2
+    out$var_ratio <- q$se2 / q$su2
   } else {
-    stats::predict(prob_fit, level = 0, newdata = newdata)
+    out$sigma2_v1 <- q$sig1^2
+    out$sigma2_v2 <- q$su2
+    out$sigma2_e  <- q$se2
+    out$rho       <- q$rho
+    out$cov_u1u2  <- q$rho * q$sig1 * sqrt(q$su2)
+    out$theta_uncorr <- theta_uncorr
+    out$m2loglik_uncorr <- m2ll_uncorr
   }
-}
-
-#' Subject-level random effects from prob model
-#' Returns a named numeric vector (name = subject ID as character).
-#' @keywords internal
-prob_ranef <- function(prob_fit) {
-  if (inherits(prob_fit, "glmerMod")) {
-    re <- lme4::ranef(prob_fit)$subject  # data frame, 1 col per RE term
-    setNames(as.numeric(re[[1]]), rownames(re))
-  } else {
-    re <- nlme::ranef(prob_fit)          # data frame, 1 col ("(Intercept)")
-    setNames(as.numeric(re[[1]]), rownames(re))
-  }
-}
-
-
-#' Fit two-part correlated model (for episodically consumed foods)
-#'
-#' Part 1: logit(P(Y>0)) = Z'alpha + v1_i
-#' Part 2: T(Y|Y>0) = X'beta + v2_i + eps
-#' (v1_i, v2_i) ~ BVN(0, Sigma)
-#'
-#' Uses profile likelihood over a grid of rho values:
-#' 1. Fit uncorrelated model to get fixed effects and variance components
-#' 2. For each rho on a grid, condition on rho and compute profile log-likelihood
-#'    using Cholesky-adjusted residuals from the two fitted models
-#' 3. Select rho that maximises the profile likelihood
-#'
-#' This approach is fast because it reuses existing nlme/glmmPQL fits rather
-#' than performing full joint optimisation. The approximation is documented in
-#' the package spec (PACKAGE_SPEC.md, section 4.3.1).
-#'
-#' @keywords internal
-fit_twopart_corr <- function(prep, lambda, verbose,
-                              prob_engine = "glmmPQL", start = NULL) {
-
-  if (verbose) message("Fitting two-part correlated model (profile likelihood over rho)...")
-
-  # Step 1: Fit uncorrelated model to get all parameters
-  if (verbose) message("  Step 1: Fitting uncorrelated model...")
-  uncorr <- fit_twopart_uncorr(prep, lambda, verbose = FALSE,
-                                prob_engine = prob_engine, start = start)
-
-  if (!uncorr$converged || is.na(uncorr$sigma2_v1) || uncorr$sigma2_v1 <= 0) {
-    if (!uncorr$converged) {
-      warning("Uncorrelated model failed; falling back to rho = 0.")
-    } else {
-      warning("Probability variance (sigma2_v1) is NA or zero; falling back to rho = 0.")
-    }
-    uncorr$rho <- 0
-    uncorr$rho_profile <- data.frame(rho = numeric(0), loglik = numeric(0))
-    return(uncorr)
-  }
-
-  work      <- prep$data
-  cov_names <- prep$cov_names
-
-  # Build design matrix (shared by both parts)
-  if (length(cov_names) > 0) {
-    X_full <- stats::model.matrix(
-      stats::as.formula(paste("~", paste(cov_names, collapse = " + "))),
-      data = work
-    )
-  } else {
-    X_full <- matrix(1, nrow = nrow(work), ncol = 1)
-  }
-
-  # Subject-level standardised residuals from each part
-  # Probability part: subject-level random effects are v1_i ~ N(0, sigma2_v1)
-  # We approximate v1_i by the empirical Bayes estimate, then standardise.
-  # IMPORTANT: align by subject ID — amt_fit is fit only on consumed rows, so
-  # some subjects (never-consumers) may be absent from amt_re. Misalignment
-  # would corrupt the profile likelihood calculation.
-  all_subjects <- as.character(sort(unique(work$subject)))
-
-  prob_re_named <- tryCatch(
-    prob_ranef(uncorr$prob_fit),
-    error = function(e) setNames(rep(0, length(all_subjects)), all_subjects)
-  )
-
-  # Detect total failure of the probability sub-model: if every random effect
-  # is NA the glmmPQL/glmer fit did not converge (likely quasi-complete
-  # separation or a boundary variance estimate). Continuing would make r1 all
-  # zeros after NA replacement and corrupt the profile likelihood.
-  if (length(prob_re_named) == 0L || all(is.na(prob_re_named))) {
-    warning(
-      "The probability sub-model returned all-NA random effects, indicating ",
-      "it failed to converge (e.g. quasi-complete separation or a boundary ",
-      "variance estimate). If the proportion of non-zero observations is very ",
-      "high or very low for a two-part model, consider model_type = \"amount\" ",
-      "(for nearly ubiquitous foods) or verify that the food is truly episodic.",
-      call. = FALSE
-    )
-    uncorr$rho <- 0
-    uncorr$rho_profile <- data.frame(rho = numeric(0), loglik = numeric(0))
-    uncorr$convergence_warning <- "prob_model_all_na_ranef"
-    return(uncorr)
-  }
-
-  amt_re_named <- tryCatch({
-    re_df <- nlme::ranef(uncorr$amt_fit)
-    setNames(as.numeric(re_df[[1]]), rownames(re_df))
-  }, error = function(e) setNames(rep(0, length(all_subjects)), all_subjects))
-
-  # Build aligned vectors (never-consumers get amt_re = 0)
-  prob_re <- numeric(length(all_subjects))
-  names(prob_re) <- all_subjects
-  common_prob <- intersect(all_subjects, names(prob_re_named))
-  if (length(common_prob) > 0) {
-    prob_re[common_prob] <- prob_re_named[common_prob]
-  }
-  amt_re  <- numeric(length(all_subjects))
-  names(amt_re) <- all_subjects
-  common_subjects <- intersect(all_subjects, names(amt_re_named))
-  if (length(common_subjects) > 0) {
-    amt_re[common_subjects] <- amt_re_named[common_subjects]
-  }
-
-  # Standardise to unit variance (guard against NA/NaN/zero)
-  sd_v1 <- sqrt(uncorr$sigma2_v1)
-  sd_v2 <- sqrt(uncorr$sigma2_v2)
-  r1 <- if (isTRUE(sd_v1 > 0)) prob_re / sd_v1 else prob_re
-  r2 <- if (isTRUE(sd_v2 > 0)) amt_re  / sd_v2 else amt_re
-
-  # Replace any residual NAs (e.g. from subject lookup gaps) with 0 so that
-  # the profile log-likelihood never receives NA inputs and cannot return NA.
-  n_na_r1 <- sum(is.na(r1))
-  n_na_r2 <- sum(is.na(r2))
-  r1[is.na(r1)] <- 0
-  r2[is.na(r2)] <- 0
-
-  # Guard against degenerate residuals: when too many residuals are zero
-  # (e.g. from NA replacement or failed random-effect extraction), the profile
-  # log-likelihood reduces to -0.5*n*log(1-rho^2) which increases with |rho|,
-  # causing the grid search to select a boundary value (rho ~ +-1).
-  # Detect this and fall back to rho = 0 (conservative but correct).
-  n_total <- length(r1)
-  n_both_nonzero <- sum(r1 != 0 & r2 != 0)
-  if (n_both_nonzero < 5 || n_na_r1 > 0.5 * n_total || n_na_r2 > 0.5 * n_total) {
-    if (verbose) {
-      message(sprintf(
-        "  Residuals degenerate (non-zero pairs: %d/%d, NAs replaced: r1=%d, r2=%d); falling back to rho = 0.",
-        n_both_nonzero, n_total, n_na_r1, n_na_r2
-      ))
-    }
-    warning("Too few valid residual pairs for profile likelihood; falling back to rho = 0.")
-    uncorr$rho <- 0
-    uncorr$rho_profile <- data.frame(rho = numeric(0), loglik = numeric(0))
-    return(uncorr)
-  }
-
-  # Profile log-likelihood over rho:
-  # Given rho, the bivariate density of (v1, v2) changes. We evaluate how well
-  # the standardised residuals (r1, r2) fit a BVN(0, [[1, rho],[rho, 1]]) model
-  # using the bivariate normal log-likelihood.
-  profile_loglik <- function(rho) {
-    if (!is.finite(rho)) return(-Inf)
-    n <- length(r1)
-    det_val <- 1 - rho^2
-    if (!is.finite(det_val) || det_val <= 0) return(-Inf)
-    # Sum of bivariate normal log-densities for (r1_i, r2_i)
-    ll <- -0.5 * n * log(det_val) -
-      0.5 / det_val * sum(r1^2 - 2 * rho * r1 * r2 + r2^2) +
-      # subtract the univariate terms already counted (constants)
-      0.5 * sum(r1^2) + 0.5 * sum(r2^2)
-    if (!is.finite(ll)) return(-Inf)
-    ll
-  }
-
-  # Helper: safe which.max that falls back to index 1 on NA/empty result
-  safe_which_max <- function(x) {
-    idx <- which.max(x)
-    if (length(idx) == 0L || is.na(idx)) 1L else idx
-  }
-
-  # Coarse grid search then refine around maximum
-  rho_grid_coarse <- seq(-0.9, 0.9, by = 0.1)
-  ll_coarse <- vapply(rho_grid_coarse, profile_loglik, numeric(1))
-  best_coarse <- rho_grid_coarse[safe_which_max(ll_coarse)]
-
-  # Fine grid within ±0.15 of coarse best
-  rho_grid_fine <- seq(
-    max(-0.99, best_coarse - 0.15),
-    min( 0.99, best_coarse + 0.15),
-    by = 0.01
-  )
-  ll_fine <- vapply(rho_grid_fine, profile_loglik, numeric(1))
-  rho_hat <- rho_grid_fine[safe_which_max(ll_fine)]
-
-  # Sanity check: if rho_hat is at the grid boundary, the profile likelihood
-  # likely degenerated (e.g. insufficient residual signal). Cross-check with
-  # the sample correlation of the residuals.
-  if (abs(rho_hat) >= 0.98) {
-    r_sample <- tryCatch(stats::cor(r1, r2), error = function(e) NA_real_)
-    if (is.na(r_sample) || sign(r_sample) != sign(rho_hat) || abs(r_sample) < 0.3) {
-      if (verbose) {
-        message(sprintf(
-          "    Profile rho (%.4f) at grid boundary; sample cor = %.4f. Using sample cor.",
-          rho_hat, ifelse(is.na(r_sample), 0, r_sample)
-        ))
-      }
-      rho_hat <- if (is.na(r_sample)) 0 else max(-0.95, min(0.95, r_sample))
-    }
-  }
-
-  if (verbose) {
-    message(sprintf("  Step 2: Profile likelihood over rho"))
-    message(sprintf("    Coarse best rho: %.2f", best_coarse))
-    message(sprintf("    Fine best rho:   %.4f", rho_hat))
-    message(sprintf("  Final parameter estimates:"))
-    message(sprintf("    sigma2_v1 (prob):   %.4f", uncorr$sigma2_v1))
-    message(sprintf("    sigma2_v2 (amount): %.4f", uncorr$sigma2_v2))
-    message(sprintf("    sigma2_e (within):  %.4f", uncorr$sigma2_e))
-    message(sprintf("    rho:                %.4f", rho_hat))
-  }
-
-  # Return all uncorrelated parameters plus the estimated rho
-  list(
-    prob_fit   = uncorr$prob_fit,
-    amt_fit    = uncorr$amt_fit,
-    alpha      = uncorr$alpha,
-    beta       = uncorr$beta,
-    sigma2_v1  = uncorr$sigma2_v1,
-    sigma2_v2  = uncorr$sigma2_v2,
-    sigma2_e   = uncorr$sigma2_e,
-    rho        = rho_hat,
-    rho_profile = data.frame(
-      rho    = c(rho_grid_coarse, rho_grid_fine),
-      loglik = c(ll_coarse, ll_fine)
-    ),
-    predicted  = uncorr$predicted,
-    converged  = uncorr$converged
-  )
-}
-
-
-# ---------------------------------------------------------------------------
-# GHQ engine for correlated two-part model (v0.2)
-# ---------------------------------------------------------------------------
-
-#' Fit two-part correlated model via Gauss-Hermite Quadrature
-#'
-#' Integrates out the bivariate random effects (v1_i, v2_i) using tensor-
-#' product Gauss-Hermite quadrature and optimises the marginal log-likelihood
-#' over the variance components (sigma2_v1, sigma2_v2, sigma2_e) and the
-#' correlation rho.
-#'
-#' Fixed effects (alpha for the probability sub-model and beta for the amount
-#' sub-model) are held at the estimates from the uncorrelated model; this
-#' mirrors the approach taken by the profile likelihood engine and is
-#' substantially faster than full joint optimisation over all parameters.
-#'
-#' @param prep Prepared data list from prepare_mixtran_data()
-#' @param lambda Box-Cox lambda (already determined)
-#' @param verbose Print progress
-#' @param prob_engine "glmmPQL" or "glmer" for the uncorr initialisation step
-#' @param n_nodes Number of GH nodes per dimension (default 5)
-#' @param start Optional mixtran_fit for warm-starting variance components
-#' @keywords internal
-fit_twopart_corr_ghq <- function(prep, lambda, verbose,
-                                  prob_engine = "glmmPQL",
-                                  n_nodes = 5L,
-                                  start = NULL) {
-
-  if (verbose) message(sprintf(
-    "Fitting two-part correlated model (GHQ, n_nodes=%d)...", n_nodes))
-
-  # --- Step 1: starting values from uncorrelated model ---
-  if (verbose) message("  Step 1: Fitting uncorrelated model for starting values...")
-  uncorr <- fit_twopart_uncorr(prep, lambda, verbose = FALSE,
-                                prob_engine = prob_engine, start = start)
-
-  if (!uncorr$converged) {
-    warning("Uncorrelated model did not converge; falling back to profile_rho.")
-    return(fit_twopart_corr(prep, lambda, verbose,
-                             prob_engine = prob_engine, start = start))
-  }
-
-  work      <- prep$data
-  cov_names <- prep$cov_names
-
-  # Population-level linear predictors (no random effects)
-  eta_pop <- as.numeric(prob_popn_predict(uncorr$prob_fit, newdata = work))
-
-  work_pos     <- work[work$consumed == 1, ]
-  mu_pop       <- as.numeric(stats::predict(uncorr$amt_fit, level = 0))
-  y_pos        <- work_pos$intake
-  t_y_pos      <- boxcox_transform(y_pos, lambda)
-  log_y_pos    <- log(y_pos)
-
-  # Integer subject indices (1 : n_subj) for fast tapply-style aggregation
-  subjects     <- unique(work$subject)
-  subj_map     <- stats::setNames(seq_along(subjects), as.character(subjects))
-  person_id    <- as.integer(subj_map[as.character(work$subject)])
-  person_id_pos <- as.integer(subj_map[as.character(work_pos$subject)])
-  n_subj       <- prep$n_subjects
-
-  consumed <- work$consumed
-
-  # --- Step 2: marginal log-likelihood via GHQ ---
-  #
-  # The probability and amount intercept shifts (d_alpha, d_beta) are estimated
-  # jointly with the variance components and rho. This corrects the selection
-  # bias in the amount sub-model: because the uncorrelated amount fit uses only
-  # consumed days, a positive rho makes those days over-represent high-amount
-  # subjects, biasing the consumers-only intercept upward. Freeing the
-  # intercepts inside the bivariate marginal likelihood recovers the unbiased
-  # NLMIXED-style estimate (covariate slopes remain at the uncorr values).
-  ghq_loglik <- function(log_sv1, log_sv2, log_se, atanh_rho,
-                         d_alpha = 0, d_beta = 0) {
-    sigma_v1 <- exp(log_sv1)
-    sigma_v2 <- exp(log_sv2)
-    sigma_e  <- exp(log_se)
-    rho      <- tanh(atanh_rho)
-
-    nodes_biv <- gh_nodes_bivariate(n_nodes, rho, sigma_v1, sigma_v2)
-    n_q       <- nrow(nodes_biv)
-
-    # log-lik contribution matrix: n_subj × n_q
-    ll_mat <- matrix(0, nrow = n_subj, ncol = n_q)
-
-    for (q in seq_len(n_q)) {
-      v1_q <- nodes_biv$v1[q]
-      v2_q <- nodes_biv$v2[q]
-
-      # Probability contributions (all observations)
-      eta_q <- eta_pop + d_alpha + v1_q
-      log_p <- ifelse(consumed == 1L,
-                      stats::plogis(eta_q, log.p = TRUE),
-                      stats::plogis(eta_q, log.p = TRUE, lower.tail = FALSE))
-      log_prob_subj <- as.numeric(tapply(log_p, person_id, sum))
-
-      # Amount contributions (positive observations only)
-      log_amt_subj <- numeric(n_subj)
-      if (length(t_y_pos) > 0L) {
-        log_f <- stats::dnorm(t_y_pos, mean = mu_pop + d_beta + v2_q,
-                              sd = sigma_e, log = TRUE) +
-                 (lambda - 1) * log_y_pos
-        amt_by_subj <- tapply(log_f, person_id_pos, sum)
-        log_amt_subj[as.integer(names(amt_by_subj))] <-
-          as.numeric(amt_by_subj)
-      }
-
-      ll_mat[, q] <- log_prob_subj + log_amt_subj
-    }
-
-    # Log-sum-exp over quadrature points: log L_i = log Σ_q w_q exp(ll_iq)
-    lw <- nodes_biv$log_weight   # length n_q
-    ll_plus_lw <- ll_mat + matrix(lw, nrow = n_subj, ncol = n_q, byrow = TRUE)
-    row_max    <- apply(ll_plus_lw, 1, max)
-    log_marg   <- row_max + log(rowSums(exp(ll_plus_lw - row_max)))
-    sum(log_marg)
-  }
-
-  # --- Step 3: optimise variance components + rho + intercept shifts ---
-  if (verbose) message("  Step 2: Optimising variance components via GHQ...")
-
-  # Starting values from uncorr fit (or prior start if supplied)
-  if (!is.null(start) && inherits(start, "mixtran_fit") &&
-      !is.null(start$sigma2_v1)) {
-    sv1_init <- log(sqrt(start$sigma2_v1))
-    sv2_init <- log(sqrt(start$sigma2_v2))
-    se_init  <- log(sqrt(start$sigma2_e))
-    rho_init <- atanh(min(max(start$rho, -0.95), 0.95))
-  } else {
-    sv1_init <- log(sqrt(uncorr$sigma2_v1))
-    sv2_init <- log(sqrt(uncorr$sigma2_v2))
-    se_init  <- log(sqrt(uncorr$sigma2_e))
-    rho_init <- atanh(0)
-  }
-  # Intercept shifts start at 0 (i.e. the uncorrelated estimate)
-  par_init <- c(sv1_init, sv2_init, se_init, rho_init, 0, 0)
-
-  neg_ll <- function(par) {
-    tryCatch(
-      -ghq_loglik(par[1], par[2], par[3], par[4], par[5], par[6]),
-      error = function(e) 1e10
-    )
-  }
-
-  opt <- tryCatch(
-    stats::optim(
-      par     = par_init,
-      fn      = neg_ll,
-      method  = "L-BFGS-B",
-      lower   = c(-6, -6, -6, -4, -3, -3),
-      upper   = c( 6,  6,  6,  4,  3,  3),
-      control = list(maxit = 300, factr = 1e8)
-    ),
-    error = function(e) {
-      if (verbose) message("    L-BFGS-B failed (", e$message,
-                           "); retrying with Nelder-Mead...")
-      tryCatch(
-        stats::optim(
-          par     = par_init,
-          fn      = neg_ll,
-          method  = "Nelder-Mead",
-          control = list(maxit = 1000, reltol = 1e-6)
-        ),
-        error = function(e2) NULL
-      )
-    }
-  )
-
-  if (is.null(opt) || opt$convergence > 1) {
-    if (verbose) message("    GHQ optimisation did not converge; ",
-                         "falling back to profile_rho.")
-    return(fit_twopart_corr(prep, lambda, verbose,
-                             prob_engine = prob_engine, start = start))
-  }
-
-  p       <- opt$par
-  sigma_v1 <- exp(p[1]);  sigma_v2 <- exp(p[2])
-  sigma_e  <- exp(p[3]);  rho_hat  <- tanh(p[4])
-  d_alpha  <- p[5];       d_beta   <- p[6]
-
-  # Apply the estimated intercept shifts to the fixed effects and to the
-  # population-level linear predictors stored in `predicted` (so DISTRIB and
-  # INDIVINT use the bias-corrected intercepts). NA amount predictors for
-  # never-consumers remain NA after the shift.
-  alpha_corr <- uncorr$alpha
-  beta_corr  <- uncorr$beta
-  if ("(Intercept)" %in% names(alpha_corr)) {
-    alpha_corr["(Intercept)"] <- alpha_corr["(Intercept)"] + d_alpha
-  }
-  if ("(Intercept)" %in% names(beta_corr)) {
-    beta_corr["(Intercept)"] <- beta_corr["(Intercept)"] + d_beta
-  }
-  pred_corr <- uncorr$predicted
-  if (!is.null(pred_corr$prob_linpred)) {
-    pred_corr$prob_linpred <- pred_corr$prob_linpred + d_alpha
-  }
-  if (!is.null(pred_corr$amt_linpred)) {
-    pred_corr$amt_linpred <- pred_corr$amt_linpred + d_beta
-  }
-
-  if (verbose) {
-    message(sprintf("    sigma_v1 = %.4f  sigma_v2 = %.4f  sigma_e = %.4f  rho = %.4f",
-                    sigma_v1, sigma_v2, sigma_e, rho_hat))
-    message(sprintf("    intercept shifts: d_alpha = %.4f  d_beta = %.4f",
-                    d_alpha, d_beta))
-    message(sprintf("    GHQ log-likelihood = %.3f  (convergence code: %d)",
-                    -opt$value, opt$convergence))
-  }
-
-  list(
-    prob_fit    = uncorr$prob_fit,
-    amt_fit     = uncorr$amt_fit,
-    alpha       = alpha_corr,
-    beta        = beta_corr,
-    sigma2_v1   = sigma_v1^2,
-    sigma2_v2   = sigma_v2^2,
-    sigma2_e    = sigma_e^2,
-    rho         = rho_hat,
-    ghq_n_nodes = n_nodes,
-    ghq_loglik  = -opt$value,
-    ghq_intercept_shift = c(d_alpha = d_alpha, d_beta = d_beta),
-    predicted   = pred_corr,
-    converged   = (opt$convergence == 0)
-  )
+  out
 }
 
 
@@ -1265,34 +514,29 @@ fit_twopart_corr_ghq <- function(prep, lambda, verbose,
 #' @export
 print.mixtran_fit <- function(x, ...) {
   cat("NCI Usual Intake Model (MIXTRAN)\n")
-  cat(sprintf("  Model type:     %s\n", x$model_type))
+  cat(sprintf("  Model type:      %s\n", x$model_type))
   cat(sprintf("  Intake variable: %s\n", x$intake_var))
-  cat(sprintf("  N subjects:     %d\n", x$n_subjects))
-  cat(sprintf("  N recalls:      %d\n", x$n_recalls))
-  cat(sprintf("  N positive:     %d (%.1f%%)\n", x$n_positive, x$pct_consuming))
-  cat(sprintf("  Box-Cox lambda: %.3f\n", x$lambda))
+  cat(sprintf("  N subjects:      %d\n", x$n_subjects))
+  cat(sprintf("  N recalls:       %d\n", x$n_recalls))
+  cat(sprintf("  N positive:      %d (%.1f%%)\n", x$n_positive, x$pct_consuming))
+  cat(sprintf("  Box-Cox lambda:  %.4f%s\n", x$lambda,
+              if (isTRUE(x$lambda_estimated)) " (estimated)" else " (fixed)"))
+  cat(sprintf("  Converged:       %s\n", x$converged))
 
   if (x$model_type == "amount") {
-    cat(sprintf("  sigma2_between: %.4f\n", x$sigma2_b))
-    cat(sprintf("  sigma2_within:  %.4f\n", x$sigma2_w))
-    cat(sprintf("  Variance ratio: %.2f\n", x$var_ratio))
+    cat(sprintf("  var_u2 (between): %.4f\n", x$sigma2_b))
+    cat(sprintf("  var_e  (within):  %.4f\n", x$sigma2_w))
     cat("  Fixed effects (amount):\n")
-    for (nm in names(x$beta)) {
-      cat(sprintf("    %s: %.4f\n", nm, x$beta[nm]))
-    }
+    for (nm in names(x$beta)) cat(sprintf("    %s: %.4f\n", nm, x$beta[nm]))
   } else {
-    cat(sprintf("  sigma2_v1 (prob):   %.4f\n", x$sigma2_v1))
-    cat(sprintf("  sigma2_v2 (amount): %.4f\n", x$sigma2_v2))
-    cat(sprintf("  sigma2_e (within):  %.4f\n", x$sigma2_e))
-    cat(sprintf("  rho:                %.4f\n", x$rho))
+    cat(sprintf("  var_u1 (prob):    %.4f\n", x$sigma2_v1))
+    cat(sprintf("  var_u2 (amount):  %.4f\n", x$sigma2_v2))
+    cat(sprintf("  var_e (within):   %.4f\n", x$sigma2_e))
+    cat(sprintf("  rho:              %.4f\n", x$rho))
     cat("  Fixed effects (probability):\n")
-    for (nm in names(x$alpha)) {
-      cat(sprintf("    %s: %.4f\n", nm, x$alpha[nm]))
-    }
+    for (nm in names(x$alpha)) cat(sprintf("    %s: %.4f\n", nm, x$alpha[nm]))
     cat("  Fixed effects (amount):\n")
-    for (nm in names(x$beta)) {
-      cat(sprintf("    %s: %.4f\n", nm, x$beta[nm]))
-    }
+    for (nm in names(x$beta)) cat(sprintf("    %s: %.4f\n", nm, x$beta[nm]))
   }
   invisible(x)
 }

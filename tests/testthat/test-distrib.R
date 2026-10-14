@@ -41,7 +41,7 @@ test_that("usual intake distribution is narrower than observed", {
   res <- suppressMessages(distrib(fit, n_sims = 100, seed = 7))
 
   usual_sd <- res$results$Overall$sd
-  obs_sd   <- stats::sd(fit$predicted$intake)
+  obs_sd   <- stats::sd(fit$data$intake)
 
   expect_lt(usual_sd, obs_sd,
             label = "Usual intake SD < observed SD (within-person variance removed)")
@@ -51,9 +51,11 @@ test_that("distrib mean is within 10% of theoretical", {
   fit <- fit_amount_for_distrib()
   res <- suppressMessages(distrib(fit, n_sims = 200, seed = 99))
 
-  # Theoretical mean: E[T^{-1}(beta0 + u)] where u ~ N(0, sigma2_b)
+  # Theoretical mean (NCI definition): E[T^{-1}(beta0 + u + e)], with
+  # u ~ N(0, sigma2_b) and e ~ N(0, sigma2_w)
   theo_samp  <- boxcox_inverse(
-    stats::rnorm(100000, fit$beta[["(Intercept)"]], sqrt(fit$sigma2_b)),
+    stats::rnorm(100000, fit$beta[["(Intercept)"]],
+                 sqrt(fit$sigma2_b + fit$sigma2_w)),
     fit$lambda
   )
   theo_mean  <- mean(theo_samp)
@@ -123,13 +125,62 @@ test_that("weighted_quantiles falls back to unweighted when all weights are zero
 })
 
 test_that("weighted_quantiles with equal weights matches base R quantile (type 5)", {
-  # The midpoint (Hazen) plotting-position convention reduces to base R's
-  # quantile type 5 for equal weights. This guards against the earlier
-  # right-edge convention that biased percentiles downward (median 1:5 -> 2.5).
-  x <- c(3, 1, 4, 1, 5, 9, 2, 6)
+  # DISTRIB's mid-weight plotting positions reduce to quantile type 5 for
+  # equal weights and distinct values (inside the data range).
+  x <- c(3, 1, 4, 7, 5, 9, 2, 6)
   w <- rep(1, length(x))
   probs <- c(0.1, 0.25, 0.5, 0.75, 0.9)
   wq  <- nciusual:::weighted_quantiles(x, w, probs)
   ref <- as.numeric(stats::quantile(x, probs, type = 5))
   expect_equal(wq, ref, tolerance = 1e-8)
+})
+
+test_that("weighted_quantiles pools ties as the DISTRIB PC macro does", {
+  # tied values are one point carrying their combined weight
+  x <- c(1, 1, 2, 3); w <- rep(1, 4)
+  # positions: value 1 -> 0.25, value 2 -> 0.625, value 3 -> 0.875
+  expect_equal(nciusual:::weighted_quantiles(x, w, 0.625), 2)
+  expect_equal(nciusual:::weighted_quantiles(x, w, 0.25), 1)
+  expect_equal(nciusual:::weighted_quantiles(x, w, 0.75), 2.5)
+})
+
+test_that("DISTRIB back-transformation matches the 9-point rule and the exact lognormal mean", {
+  # lambda = 0: exact
+  expect_equal(nciusual:::backtransform_9pt(1, 0, 0.5, 1e-6), exp(1 + 0.25))
+  # lambda > 0: 9-point approximation close to exact quadrature
+  mu <- 5; lam <- 0.4; ve <- 0.6
+  exact <- integrate(function(e) boxcox_inverse(mu + e, lam) * dnorm(e, 0, sqrt(ve)),
+                     -Inf, Inf)$value
+  expect_equal(nciusual:::backtransform_9pt(mu, lam, ve, 1e-6), exact, tolerance = 1e-3)
+  # bounded below by half the minimum amount
+  expect_equal(nciusual:::backtransform_9pt(-50, lam, ve, 2), 1)
+})
+
+test_that("distrib averages weekday and weekend usual intake (wkend_prop)", {
+  set.seed(3); n <- 400
+  sid <- rep(1:n, each = 2); wk <- rbinom(2 * n, 1, 0.4)
+  y <- exp(2 + 0.6 * wk + rep(rnorm(n, 0, .5), each = 2) + rnorm(2 * n, 0, .4))
+  dat <- data.frame(id = sid, day = rep(1:2, n), y = y, wk = wk)
+  fit <- mixtran(dat, "y", "id", "day", weekend_var = "wk", lambda = 0,
+                 verbose = FALSE)
+  m0 <- distrib(fit, n_sims = 400, seed = 1, wkend_prop = 1e-9)$results$Overall$mean
+  m1 <- distrib(fit, n_sims = 400, seed = 1, wkend_prop = 1 - 1e-9)$results$Overall$mean
+  mm <- distrib(fit, n_sims = 400, seed = 1)$results$Overall$mean
+  expect_equal(mm, 4/7 * m0 + 3/7 * m1, tolerance = 1e-6)
+  expect_gt(m1, m0)
+})
+
+test_that("factor subgroup variables are handled", {
+  fit <- fit_amount_for_distrib(n_subjects = 300)
+  fit$predicted$grp <- factor(ifelse(seq_len(nrow(fit$predicted)) %% 2 == 0, "a", "b"))
+  res <- distrib(fit, subgroup_var = "grp", n_sims = 20)
+  expect_setequal(names(res$results), c("a", "b", "Overall"))
+  expect_true(all(is.finite(vapply(res$results, `[[`, numeric(1), "mean"))))
+})
+
+test_that("distrib does not change the caller's RNG state", {
+  fit <- fit_amount_for_distrib(n_subjects = 100)
+  set.seed(42); a <- runif(1)
+  set.seed(42); invisible(distrib(fit, n_sims = 5, seed = 1)); b <- runif(1)
+  expect_equal(a, b)
 })

@@ -10,7 +10,8 @@ make_brr_data <- function(n_subjects = 300, seed = 55) {
   t_intake  <- 15 + u_i + stats::rnorm(total, 0, sqrt(2.5))
   intake    <- pmax(boxcox_inverse(t_intake, 0.30), 1)
 
-  data.frame(SEQN = sids, day = reps, sodium_mg = intake,
+  base_wt   <- stats::runif(n_subjects, 0.5, 2)[sids]
+  data.frame(SEQN = sids, day = reps, sodium_mg = intake, wt = base_wt,
              stringsAsFactors = FALSE)
 }
 
@@ -41,6 +42,7 @@ test_that("brr_usual_intake returns a brr_result object", {
       subject_var = "SEQN",
       repeat_var  = "day",
       model_type  = "amount",
+      weight_var  = "wt",
       lambda      = 0.30,
       verbose     = FALSE
     ),
@@ -68,6 +70,7 @@ test_that("brr_to_df returns a data frame with expected columns", {
       subject_var = "SEQN",
       repeat_var  = "day",
       model_type  = "amount",
+      weight_var  = "wt",
       lambda      = 0.30,
       verbose     = FALSE
     ),
@@ -104,4 +107,34 @@ test_that("brr_usual_intake errors on mismatched replicate weight rows", {
     )),
     regexp = "unique subjects"
   )
+})
+
+
+test_that("BRR full-sample and replicate runs are consistent (identical weights -> SE 0)", {
+  dat <- make_brr_data(n_subjects = 150)
+  subj <- dat[!duplicated(dat$SEQN), ]
+  rw  <- data.frame(SEQN = subj$SEQN, r1 = subj$wt, r2 = subj$wt, r3 = subj$wt)
+  res <- suppressMessages(brr_usual_intake(
+    dat, rw, subject_var = "SEQN",
+    mixtran_args = list(intake_var = "sodium_mg", subject_var = "SEQN",
+                        repeat_var = "day", weight_var = "wt", lambda = 0.3,
+                        verbose = FALSE),
+    distrib_args = list(n_sims = 20, seed = 3), verbose = FALSE))
+  # replicates re-converge from the base run, so differences are only at the
+  # optimiser's tolerance (the old code compared weighted replicates to an
+  # unweighted base run, giving large spurious SEs here)
+  expect_lt(max(res$se / pmax(abs(res$estimates), 1)), 1e-5)
+})
+
+test_that("BRR variance uses Fay's formula", {
+  dat <- make_brr_data(n_subjects = 150)
+  rw  <- make_toy_brr_weights(dat, K = 4)
+  res <- suppressMessages(brr_usual_intake(
+    dat, rw, subject_var = "SEQN",
+    mixtran_args = list(intake_var = "sodium_mg", subject_var = "SEQN",
+                        repeat_var = "day", weight_var = "wt", lambda = 0.3,
+                        verbose = FALSE),
+    distrib_args = list(n_sims = 20, seed = 3), fay_factor = 0.3, verbose = FALSE))
+  manual <- sqrt(rowSums((res$theta_matrix - res$estimates)^2) / (4 * 0.7^2))
+  expect_equal(unname(res$se), unname(manual), tolerance = 1e-10)
 })

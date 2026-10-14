@@ -65,125 +65,63 @@ test_that("gh_nodes_weights works for non-table n via eigenvalue method", {
 })
 
 
-# ---------------------------------------------------------------------------
-# GHQ engine integration tests (synthetic data)
-# ---------------------------------------------------------------------------
-
-make_corr_data_ghq <- function(n_subjects = 400, true_rho = 0.5, seed = 42) {
-  set.seed(seed)
-  n_recalls <- sample(1:2, n_subjects, replace = TRUE, prob = c(0.35, 0.65))
-  total     <- sum(n_recalls)
-  subject_ids <- rep(seq_len(n_subjects), times = n_recalls)
-  repeat_nums <- unlist(lapply(n_recalls, seq_len))
-
-  sv1 <- 1.0; sv2 <- 0.9
-  z1s <- stats::rnorm(n_subjects)
-  z2s <- stats::rnorm(n_subjects)
-  v1s <- sv1 * z1s
-  v2s <- sv2 * (true_rho * z1s + sqrt(1 - true_rho^2) * z2s)
-
-  v1 <- rep(v1s, times = n_recalls)
-  v2 <- rep(v2s, times = n_recalls)
-
-  p_consume <- stats::plogis(0.2 + v1)
-  consumed  <- stats::rbinom(total, 1, p_consume)
-  lambda    <- 0.3
-  t_amount  <- 2.8 + v2 + stats::rnorm(total, 0, sqrt(0.7))
-  amount    <- pmax(boxcox_inverse(t_amount, lambda), 0.1)
-  intake    <- consumed * amount
-
-  data.frame(id = subject_ids, day = repeat_nums,
-             food_g = intake, stringsAsFactors = FALSE)
-}
-
-test_that("GHQ engine returns valid mixtran_fit with correct rho sign", {
-  dat <- make_corr_data_ghq(true_rho = 0.5)
-  fit <- suppressMessages(suppressWarnings(mixtran(
-    data        = dat,
-    intake_var  = "food_g",
-    subject_var = "id",
-    repeat_var  = "day",
-    model_type  = "corr",
-    corr_engine = "ghq",
-    ghq_n_nodes = 5L,
-    lambda      = 0.3,
-    verbose     = FALSE
-  )))
-
-  expect_s3_class(fit, "mixtran_fit")
-  expect_equal(fit$model_type, "corr")
-  expect_equal(fit$corr_engine, "ghq")
-  expect_true(fit$rho > -1 && fit$rho < 1)
-  # Should recover positive correlation (may not be close with n=400 but sign should be right)
-  expect_gt(fit$rho, -0.2)
+test_that("tabulated GH nodes match the Golub-Welsch computation", {
+  gw <- function(n) {
+    off <- sqrt(seq_len(n - 1) / 2); J <- diag(0, n)
+    J[cbind(1:(n - 1), 2:n)] <- off; J[cbind(2:n, 1:(n - 1))] <- off
+    e <- eigen(J, symmetric = TRUE); o <- order(e$values)
+    list(nodes = e$values[o], weights = (e$vectors[1, ]^2 * sqrt(pi))[o])
+  }
+  for (n in c(3, 5, 7, 9)) {
+    expect_equal(gh_nodes_weights(n)$nodes, gw(n)$nodes, tolerance = 1e-10)
+    expect_equal(gh_nodes_weights(n)$weights, gw(n)$weights, tolerance = 1e-10)
+  }
 })
 
-test_that("GHQ engine stores ghq_n_nodes in fit", {
-  dat <- make_corr_data_ghq(n_subjects = 200, seed = 99)
-  fit <- suppressMessages(suppressWarnings(mixtran(
-    data        = dat,
-    intake_var  = "food_g",
-    subject_var = "id",
-    repeat_var  = "day",
-    model_type  = "corr",
-    corr_engine = "ghq",
-    ghq_n_nodes = 3L,
-    lambda      = 0.3,
-    verbose     = FALSE
-  )))
-  expect_equal(fit$ghq_n_nodes, 3L)
-  expect_true(!is.null(fit$ghq_loglik))
+test_that("gh_nodes_adaptive weights give prior expectations", {
+  # With no data the posterior is the prior: weights must integrate 1 and v1^2
+  a <- gh_nodes_adaptive(9, eta_i = numeric(0), mu_i = numeric(0),
+                         consumed_i = numeric(0), t_y_i = numeric(0),
+                         sigma_v1 = 2, sigma_v2 = 0.5, sigma_e = 1, rho = 0.3,
+                         lambda = 0.5)
+  expect_equal(sum(exp(a$log_weight)), 1, tolerance = 1e-6)
+  expect_equal(sum(exp(a$log_weight) * a$v1^2), 4, tolerance = 1e-4)
+  expect_equal(sum(exp(a$log_weight) * a$v1 * a$v2), 0.3 * 2 * 0.5, tolerance = 1e-4)
 })
 
-test_that("GHQ and profile_rho engines give rho estimates with same sign", {
-  dat <- make_corr_data_ghq(true_rho = 0.6, seed = 77)
-
-  fit_prof <- suppressMessages(suppressWarnings(mixtran(
-    data        = dat,
-    intake_var  = "food_g",
-    subject_var = "id",
-    repeat_var  = "day",
-    model_type  = "corr",
-    corr_engine = "profile_rho",
-    lambda      = 0.3,
-    verbose     = FALSE
-  )))
-
-  fit_ghq <- suppressMessages(suppressWarnings(mixtran(
-    data        = dat,
-    intake_var  = "food_g",
-    subject_var = "id",
-    repeat_var  = "day",
-    model_type  = "corr",
-    corr_engine = "ghq",
-    ghq_n_nodes = 5L,
-    lambda      = 0.3,
-    verbose     = FALSE
-  )))
-
-  # Both should recover non-negative rho (rho=0 fallback is valid if prob model fails)
-  expect_true(is.numeric(fit_prof$rho) && !is.na(fit_prof$rho))
-  expect_true(is.numeric(fit_ghq$rho) && !is.na(fit_ghq$rho))
-  expect_gte(fit_prof$rho, 0)
-  expect_gte(fit_ghq$rho, 0)
+test_that("adaptive quadrature in the engine matches integrate() for the probability part", {
+  set.seed(8)
+  n <- 40
+  dat <- data.frame(id = rep(1:n, each = 3), day = rep(1:3, n))
+  v <- rep(rnorm(n, 0, 1.5), each = 3)
+  dat$y <- rbinom(3 * n, 1, plogis(0.4 + v)) * exp(rnorm(3 * n, 1, 0.5))
+  fit <- suppressMessages(mixtran(dat, "y", "id", "day", model_type = "uncorr",
+                                  lambda = 0, include_seq = FALSE, verbose = FALSE))
+  d <- nciusual:::.nci_design(fit$data, fit$prob_covs_used, fit$amt_covs_used, 0, 21, has_prob = TRUE)
+  eng <- nciusual:::.ll_subject(fit$theta, d, "prob")
+  sd1 <- sqrt(fit$sigma2_v1); a0 <- fit$alpha[["(Intercept)"]]
+  bf <- vapply(1:n, function(i) {
+    yn <- fit$data$consumed[fit$data$subject == i]
+    log(integrate(function(u) vapply(u, function(uu)
+      prod(dbinom(yn, 1, plogis(a0 + uu))) * dnorm(uu, 0, sd1), 1), -Inf, Inf,
+      rel.tol = 1e-12)$value)
+  }, 1)
+  expect_equal(unname(eng), bf, tolerance = 1e-7)
 })
 
-test_that("distrib() works correctly after GHQ-fitted mixtran", {
-  dat <- make_corr_data_ghq(n_subjects = 300, seed = 55)
-  fit <- suppressMessages(suppressWarnings(mixtran(
-    data        = dat,
-    intake_var  = "food_g",
-    subject_var = "id",
-    repeat_var  = "day",
-    model_type  = "corr",
-    corr_engine = "ghq",
-    ghq_n_nodes = 3L,
-    lambda      = 0.3,
-    verbose     = FALSE
-  )))
-
-  dr <- suppressMessages(distrib(fit, n_sims = 20, seed = 1))
-  expect_s3_class(dr, "distrib_result")
-  expect_true(!is.null(dr$results$Overall$mean))
-  expect_true(dr$results$Overall$mean > 0)
+test_that("distrib() works after a correlated fit", {
+  set.seed(42)
+  n <- 400
+  nr <- sample(1:2, n, replace = TRUE, prob = c(0.35, 0.65))
+  sid <- rep(seq_len(n), nr); day <- unlist(lapply(nr, seq_len))
+  z1 <- rnorm(n); z2 <- rnorm(n)
+  v1 <- rep(z1, nr); v2 <- rep(0.9 * (0.5 * z1 + sqrt(0.75) * z2), nr)
+  y <- rbinom(length(sid), 1, plogis(0.2 + v1)) *
+    pmax(boxcox_inverse(2.8 + v2 + rnorm(length(sid), 0, sqrt(0.7)), 0.3), 0.1)
+  fit <- suppressMessages(mixtran(data.frame(id = sid, day = day, y = y), "y", "id", "day",
+                                  model_type = "corr", lambda = 0.3, verbose = FALSE))
+  res <- distrib(fit, n_sims = 50, seed = 1)
+  expect_s3_class(res, "distrib_result")
+  expect_true(is.finite(res$results$Overall$mean))
+  expect_true(all(diff(res$results$Overall$percentiles) >= 0))
 })
