@@ -1,15 +1,15 @@
 # nciusual
 
-An R package implementing the National Cancer Institute (NCI) method for estimating usual dietary intake distributions from 24-hour dietary recall data. R port of the NCI MIXTRAN v2.21, DISTRIB v2.2, and INDIVINT SAS macros.
+An R package implementing the National Cancer Institute (NCI) method for estimating usual dietary intake distributions from 24-hour dietary recall data. It is a port of the NCI **MIXTRAN, DISTRIB and INDIVINT SAS macros, version 2.1**, and is validated against NCI's published SAS output for the macro example programs (see [Validation](#validation)).
 
 ## Overview
 
 A single 24-hour dietary recall captures only one day of intake and conflates two sources of variation:
 
-- **Between-person variation** — real differences in habitual (usual) diets
-- **Within-person variation** — day-to-day fluctuation within an individual
+- **Between-person variation**: real differences in habitual (usual) diets
+- **Within-person variation**: day-to-day fluctuation within an individual
 
-The NCI method uses repeated recalls to estimate and remove within-person variation, recovering the narrower distribution of *usual* (long-run average) intake. This package implements that methodology entirely in R, making it accessible without a SAS license.
+The NCI method uses repeated recalls to separate the two and estimate the distribution of *usual* (long-run average) intake. This package does that entirely in R, without a SAS license.
 
 ## Installation
 
@@ -17,14 +17,15 @@ The NCI method uses repeated recalls to estimate and remove within-person variat
 remotes::install_github("comcgovern/NCI-intakes-inR")
 ```
 
-Core dependencies (`nlme`, `MASS`, `stats`, `survey`) are installed automatically. Optional enhancements: `lme4` (glmer engine), `future.apply` (parallel BRR).
+The package has no compiled code and depends only on base R packages. Optional: `survey` (BRR weight generation), `future.apply` (parallel BRR), `haven` (reading NCI's example data).
 
 ## Quick Start
 
 ```r
 library(nciusual)
 
-# Step 1 — Fit MIXTRAN model
+# Step 1 - MIXTRAN: fit the model (survey weights enter the likelihood,
+# as with MIXTRAN's replicate_var; lambda is estimated)
 fit <- mixtran(
   data        = nhanes_data,
   intake_var  = "sodium_mg",
@@ -32,269 +33,193 @@ fit <- mixtran(
   repeat_var  = "day_num",
   weekend_var = "weekend",
   weight_var  = "WTDR2D",
+  covariates  = c("age_19_30", "age_31_50", "female"),
   model_type  = "amount"    # or "uncorr" / "corr" for episodic foods
 )
 
-# Step 2 — Estimate usual intake distribution (DISTRIB)
-result <- distrib(fit, n_sims = 100, seed = 42)
+# Step 2 - DISTRIB: usual intake distribution
+result <- distrib(fit, n_sims = 100, seed = 42, cutpoints = 2300)
 print(result)
 
-# Step 3 — BRR standard errors
+# Step 3 - BRR standard errors (base weight in mixtran_args)
 brr_wts <- generate_nhanes_brr_weights(nhanes_data, weight_var = "WTDR2D",
-                                        subject_var = "SEQN")
-se_result <- brr_usual_intake(nhanes_data, brr_wts, subject_var = "SEQN",
-                               mixtran_args = list(intake_var = "sodium_mg", ...))
+                                       subject_var = "SEQN")
+se_result <- brr_usual_intake(
+  nhanes_data, brr_wts, subject_var = "SEQN",
+  mixtran_args = list(intake_var = "sodium_mg", subject_var = "SEQN",
+                      repeat_var = "day_num", weekend_var = "weekend",
+                      weight_var = "WTDR2D"))
 ```
 
 ## Core Functions
 
-### Model Fitting — `mixtran()`
+### Model Fitting: `mixtran()`
 
 ```r
 mixtran(
   data, intake_var, subject_var, repeat_var,
-  model_type  = "amount",       # "amount" | "uncorr" | "corr"
-  covariates  = NULL,           # demographic covariates (retained in usual intake)
-  weekend_var = NULL,           # weekend indicator (removed from usual intake)
-  weight_var  = NULL,           # survey weights (used in DISTRIB, not likelihood)
-  lambda      = NULL,           # Box-Cox lambda; NULL = auto-estimated
-  prob_engine = "glmmPQL",      # "glmmPQL" | "glmer" (two-part models)
-  corr_engine = "profile_rho",  # "profile_rho" | "ghq" (corr model only)
-  ghq_n_nodes = 5L,             # GH nodes per dimension (3/5/7/9) for GHQ engine
-  start       = NULL,           # prior mixtran_fit for warm starting
-  verbose     = TRUE
+  model_type      = "amount",    # "amount" | "uncorr" | "corr"  (SAS: amount | nocorr | corr)
+  covariates      = NULL,        # amount-part covariates (SAS covars_amt)
+  covariates_prob = covariates,  # probability-part covariates (SAS covars_prob)
+  weekend_var     = NULL,        # 0/1 Fri-Sun indicator (SAS weekend=)
+  weight_var      = NULL,        # survey weight (SAS replicate_var)
+  include_seq     = TRUE,        # sequence indicator for recalls after the first (SAS seq=)
+  lambda          = NULL,        # NULL = estimated by ML; a value fixes it
+  subgroup_var    = NULL,        # carried to the predictions for distrib()
+  start           = NULL,        # prior fit for starting values (SAS start_val1-3)
+  verbose         = TRUE
 )
 ```
 
-**Model types:**
+The models are fitted the way MIXTRAN fits them with PROC NLMIXED:
 
-| `model_type` | Use for | Notes |
-|---|---|---|
-| `"amount"` | Nutrients consumed every day (sodium, energy, protein) | `nlme::lme` |
-| `"uncorr"` | Episodic foods, independent random effects | `glmmPQL`/`glmer` + `lme` |
-| `"corr"` | Episodic foods, correlated random effects (full NCI parity) | Profile-ρ or GHQ |
+- **Weights** multiply each subject's marginal log-likelihood (the NLMIXED `REPLICATE` statement). Multiplying all weights by a constant changes nothing.
+- **Box-Cox λ** is a free parameter of the amount model, bounded below by 0.01 (`A_LAMBDA > 0.01`). Its starting value comes from a TRANSREG-style grid search with the amount covariates.
+- **Uncorrelated model**: the probability part (logistic, random intercept) and the amount part (Box-Cox normal on consumption days) are fitted separately.
+- **Correlated model**: the joint likelihood is maximised starting from the uncorrelated estimates. The random effects are integrated out: the amount random effect in closed form, the probability random effect by adaptive Gauss–Hermite quadrature (`n_quad`, default 21).
+- Sequence and weekend effects enter both parts of the model.
 
-**Correlated model engines:**
-
-| `corr_engine` | Method | Speed | Accuracy |
-|---|---|---|---|
-| `"profile_rho"` | Profile likelihood over ρ grid (default) | Fast | Approximate |
-| `"ghq"` | Gauss-Hermite quadrature, joint optimisation of σ²_v1/v2/e and ρ | Moderate | More accurate |
-
-### Distribution Estimation — `distrib()`
+### Distribution Estimation: `distrib()`
 
 ```r
 result <- distrib(
   mixtran_obj,
-  subgroup_var = NULL,           # optional stratification variable
-  cutpoints    = NULL,           # intake thresholds for % below/above
-  percentiles  = c(5,10,25,50,75,90,95),
-  n_sims       = 100,
-  seed         = 12345
+  subgroup_var  = NULL,          # in fit$predicted, or supply subgroup_data (SAS add_da)
+  cutpoints     = NULL,          # proportion below/above each cutpoint
+  percentiles   = c(5, 10, 25, 50, 75, 90, 95),
+  n_sims        = 100,           # SAS nsim_mc
+  seed          = 12345,
+  wkend_prop    = 3/7            # SAS wkend_prop (weekday weight 4/7)
 )
-
-distrib_to_df(result)            # tidy data frame of results
+distrib_to_df(result)
 ```
 
-### Individual Predictions — `indivint()`
+As in the DISTRIB macro, each subject's usual intake is computed from simulated random effects as:
 
-BLUP-based individual usual intake predictions for regression calibration:
+- the consumption probability, times
+- the consumption-day amount *integrated over within-person error*: DISTRIB's 9-point rule, or exact `exp(μ + σ²_e/2)` when λ = 0, bounded below by half the minimum amount.
+
+The sequence effect is removed. With a weekend indicator, weekday and weekend usual intake are averaged 4/7 : 3/7. Percentiles and cutpoint proportions use the DISTRIB PC-macro interpolation.
+
+### Individual Predictions: `indivint()`
 
 ```r
-preds <- indivint(fit, zero_seq = TRUE, zero_weekend = TRUE)
-# Returns: subject, predicted_usual, predicted_usual_orig
-#          (+ prob_usual, amt_usual_orig for two-part models)
+preds <- indivint(fit, lamt = NULL)   # lamt: optional Box-Cox scale for the prediction
+# Returns: subject, indusint, predicted_usual_orig (+ prob_usual, amt_usual_orig)
 ```
 
-### Bivariate Usual Intake — `distrib_bivariate()`
+As in the INDIVINT macro (Kipnis et al., 2009), this returns each subject's conditional expected usual intake given their recalls, `E[T | recalls]`, computed by adaptive quadrature. It is intended for regression calibration.
 
-Joint estimation for two dietary components with cross-component correlation, enabling ratio and derived-quantity distributions:
+### Bivariate Usual Intake: `distrib_bivariate()`
 
 ```r
 biv <- distrib_bivariate(
-  data        = nhanes_data,
-  intake_var1 = "sodium_mg",
-  intake_var2 = "energy_kcal",
-  subject_var = "SEQN",
-  repeat_var  = "day_num",
-  fn_ratio    = function(u1, u2) (u1 / u2) * 1000,  # sodium density (mg/1000 kcal)
-  ratio_label = "sodium_density",
-  n_sims      = 100
-)
-print(biv)
-bivariate_to_df(biv)
+  data = nhanes_data, intake_var1 = "sodium_mg", intake_var2 = "energy_kcal",
+  subject_var = "SEQN", repeat_var = "day_num",
+  fn_ratio = function(u1, u2) (u1 / u2) * 1000, ratio_label = "sodium_density")
 ```
 
-### BRR Standard Errors — `brr_usual_intake()`
+This is **not** a port of NCI's multivariate macros. It fits each component separately, approximates the cross-component correlation from the empirical Bayes estimates, and simulates both components jointly with DISTRIB's back-transformation.
 
-Balanced Repeated Replication with Fay's modification, following NHANES convention:
+### BRR Standard Errors: `brr_usual_intake()`
+
+This uses Balanced Repeated Replication with Fay's modification (F = 0.3). The full-sample run uses `mixtran_args$weight_var` (the base weight). Each replicate refits MIXTRAN and DISTRIB with its replicate weight, starting from the full-sample estimates:
 
 ```r
-# Generate BRR weights from NHANES design variables
-brr_wts <- generate_nhanes_brr_weights(
-  data        = nhanes_data,
-  strata_var  = "SDMVSTRA",
-  psu_var     = "SDMVPSU",
-  weight_var  = "WTDR2D",
-  subject_var = "SEQN"
-)
-
-# Run BRR pipeline (parallel-capable)
-se_result <- brr_usual_intake(
-  data            = nhanes_data,
-  replicate_weights = brr_wts,
-  subject_var     = "SEQN",
-  mixtran_args    = list(intake_var = "sodium_mg", ...),
-  parallel        = TRUE
-)
-brr_to_df(se_result)   # estimate, SE, 95% CI for every statistic
+brr_wts <- generate_nhanes_brr_weights(nhanes_data, strata_var = "SDMVSTRA",
+                                       psu_var = "SDMVPSU", weight_var = "WTDR2D",
+                                       subject_var = "SEQN")
+se_result <- brr_usual_intake(nhanes_data, brr_wts, subject_var = "SEQN",
+                              mixtran_args = list(..., weight_var = "WTDR2D"),
+                              parallel = TRUE)
+brr_to_df(se_result)
 ```
 
-### Multi-Cycle NHANES — `combine_nhanes_cycles()`
+### Multi-Cycle NHANES: `combine_nhanes_cycles()`
 
 ```r
-pooled <- combine_nhanes_cycles(
-  cycle_list  = list(nhanes_1718, nhanes_1920, nhanes_2122),
-  weight_var  = "WTDR2D",
-  subject_var = "SEQN"
-)
+pooled <- combine_nhanes_cycles(list(nhanes_1516, nhanes_p1720),
+                                weight_var = "WTDR2D", subject_var = "SEQN",
+                                cycle_years = c(2, 3.2))   # unequal cycle lengths
 ```
 
-### Box-Cox Utilities
+Without `cycle_years`, weights are divided by the number of cycles, which is correct only for cycles of equal length. Check current CDC NHANES weighting guidance for the cycles you pool.
+
+### Box-Cox and Quadrature Utilities
 
 ```r
-boxcox_transform(y, lambda)          # T(y; λ)
-boxcox_inverse(z, lambda)            # T⁻¹(z; λ)
-find_optimal_lambda(y, weights, ...)  # profile likelihood grid search
-```
-
-### Gauss-Hermite Quadrature — `R/quadrature.R`
-
-```r
-gh_nodes_weights(n)                          # physicist convention (Σw = √π)
-gh_nodes_normal(n)                           # probabilist (Σw = 1)
-gh_nodes_bivariate(n, rho, sigma_v1, sigma_v2)   # tensor-product BVN nodes
-gh_nodes_adaptive(n, eta_i, mu_i, ...)       # adaptive nodes (mode + Hessian scale)
+boxcox_transform(y, lambda); boxcox_inverse(z, lambda)
+find_optimal_lambda(y, weights, lambda_grid, covariates)   # grid search (starting value)
+gh_nodes_weights(n); gh_nodes_normal(n)
+gh_nodes_bivariate(n, rho, sigma_v1, sigma_v2); gh_nodes_adaptive(...)
 ```
 
 ## Statistical Background
 
-The NCI method is a two-step procedure:
-
-1. **MIXTRAN** — Fits a Box-Cox transformed mixed model, decomposing observed intake variation into between-person (σ²_b) and within-person (σ²_w) components.
-
-2. **DISTRIB** — Monte Carlo simulation: for each person, draws `n_sims` values of the between-person random effect, back-transforms to the original scale, and summarises the resulting usual intake distribution. Within-person error is intentionally omitted — this is what narrows the distribution.
-
-For episodically consumed foods, a two-part model separates the probability of consumption from the amount consumed on consumption days. The correlation ρ between their subject-level random effects is estimated via profile likelihood (fast) or Gauss-Hermite quadrature (more accurate).
-
-For bivariate analyses, the cross-component correlation between random effects is estimated from empirical Bayes predictions and propagated through the joint Monte Carlo simulation.
-
-See [`PACKAGE_SPEC.md`](PACKAGE_SPEC.md) for the full statistical specification, parity matrix with SAS macros, and implementation notes.
-
-## Repository Structure
-
-```
-nciusual/
-├── DESCRIPTION
-├── NAMESPACE
-├── PACKAGE_SPEC.md          # Full statistical and API specification
-├── README.md
-├── R/
-│   ├── boxcox.R             # Box-Cox transform, inverse, lambda search
-│   ├── mixtran.R            # MIXTRAN: amount, uncorr, corr, GHQ engine
-│   ├── distrib.R            # DISTRIB: Monte Carlo usual intake distributions
-│   ├── indivint.R           # INDIVINT: individual BLUP predictions
-│   ├── brr.R                # BRR: standard errors + NHANES weight helpers
-│   ├── bivariate.R          # Bivariate usual intake and ratio estimation
-│   ├── quadrature.R         # GH quadrature utilities (nodes/weights/adaptive)
-│   └── print_methods.R      # print/summary/plot methods
-└── tests/testthat/
-    ├── test-amount-model.R
-    ├── test-boxcox.R
-    ├── test-brr.R
-    ├── test-distrib.R
-    ├── test-ghq-engine.R
-    ├── test-glmer-engine.R
-    ├── test-indivint.R
-    ├── test-bivariate.R
-    ├── test-nhanes-helpers.R
-    ├── test-twopart-corr.R
-    └── test-twopart-uncorr.R
-```
+1. **MIXTRAN** fits a Box-Cox transformed mixed model. Amount-only: `T(Y_ij) = X'β + u_i + ε_ij`. Two-part: `logit P(Y_ij > 0) = Z'α + u1_i` together with `T(Y_ij | Y_ij > 0) = X'β + u2_i + ε_ij`, where `(u1, u2)` is bivariate normal (correlated model) or independent (uncorrelated model).
+2. **DISTRIB** draws the random effects by Monte Carlo. Usual intake is `P(u1) × E_ε[T⁻¹(X'β + u2 + ε)]`: the within-person error is *integrated over* in the back-transformation, not drawn. That is what removes day-to-day variation while keeping usual intake on the scale of expected daily intake.
+3. **INDIVINT** computes `E[usual intake | person's recalls]`.
 
 ## Validation
 
-Key results from synthetic-data recovery tests:
+### Parity with NCI's published SAS output
 
-| Check | Target | Result |
-|---|---|---|
-| Between-person variance (σ²_b) recovery | < 15% error | 5.3% |
-| Within-person variance (σ²_w) recovery | < 15% error | 1.0% |
-| Mean usual intake recovery | < 10% error | 1.4% |
-| Usual intake SD narrower than observed | SD ratio < 1 | 0.79 |
-| Uncorrelated model: σ²_v1/v2/e recovery | < 25% error | < 6% |
+NCI publishes the v2.1 macros, the analytic dataset, and the SAS listing output for its example programs ([macros](https://epi.grants.cancer.gov/diet/usualintakes/macros_single.html), [data](https://epi.grants.cancer.gov/diet/usualintakes/dataset.html)). The package was run on that dataset with the same model specifications:
 
-Run the full test suite:
+| | Result |
+|---|---|
+| **Example 1** (added sugars, males 9+, amount model) | λ 0.3939 vs SAS 0.3941; σ²_u 3.514 vs 3.518; σ²_e 4.072 vs 4.077; fixed effects within 0.02; −2 log L equal to SAS's printed value. DISTRIB mean, P1–P99 and all 10 cutpoint proportions, overall and by age group, within about 1–2% (simulation noise). |
+| **Example 2** (total fruit, children 1–8, correlated model) | Uncorrelated stage matches SAS to 3–4 decimals (λ 0.4086 vs 0.4086). Correlated stage: λ 0.4108 vs 0.4109, ρ 0.544 vs 0.556, σ²_u1 3.12 vs 3.00. DISTRIB mean and P5–P99 within about 1%. |
+
+Where parameters differ, nciusual's estimates have a *higher* likelihood than SAS's. SAS's NLMIXED stops at a relative-gradient criterion (its reported gradients are non-zero), and the correlated model's likelihood is very flat in the (σ²_u1, ρ) direction. Reproduce with:
+
+```sh
+Rscript data-raw/sas_parity_examples.R                       # side-by-side report
+NCIUSUAL_SAS_PARITY=true Rscript -e 'testthat::test_file("tests/testthat/test-sas-examples.R")'
+```
+
+SAS's Example 4 (INDIVINT) dataset is distributed in SAS CPORT format, which R cannot read. INDIVINT is instead checked against brute-force numerical integration of the same conditional expectation; it agrees to 6 decimals.
+
+### Other checks
+
+- The marginal likelihoods agree with brute-force numerical integration (amount, probability and correlated models), and the probability part agrees with `lme4::glmer(nAGQ = 25)`.
+- Analytic ground-truth fixtures (`data-raw/generate_reference.R`, `tests/testthat/fixtures/`): datasets simulated from known parameters, with the true usual-intake distribution under the NCI definition. All three model types recover it within 4–7% across P5–P95.
 
 ```r
 testthat::test_dir("tests/testthat")
 ```
 
-### Parity against analytic ground truth
-
-Because the proprietary NCI SAS macros cannot be run in this project's CI, the
-package is validated against **analytic ground truth** rather than against
-another estimator. Fixed synthetic recall datasets are generated from *known*
-parameters, and the true usual-intake distribution they imply is computed
-independently by large-sample (4×10⁶) Monte Carlo. A correct SAS
-MIXTRAN/DISTRIB run would be estimating this same target, so recovering it
-within sampling/method error is the meaningful parity check.
-
-- Reference generator: [`data-raw/generate_reference.R`](data-raw/generate_reference.R)
-- Frozen datasets + reference values: `tests/testthat/fixtures/`
-- Parity tests: `tests/testthat/test-parity-reference.R`
-
-Observed recovery on the reference fixtures: the amount-only model matches the
-true distribution to ≤2%, the uncorrelated two-part model to ≤4%, and the
-correlated two-part model via `corr_engine = "ghq"` to ≤3% across the whole
-distribution (including the lower tail, thanks to the joint intercept
-bias-correction). The faster `profile_rho` engine recovers central statistics
-well but leaves the lower-tail percentiles approximate, so those are checked
-loosely.
-
-**Covariate-adjusted correlated models — a known second-order limitation.**
-The GHQ engine frees the *intercepts* but holds covariate *slopes* at the
-uncorrelated (consumed-days-only) estimates. When a covariate strongly predicts
-the probability of consumption, its amount slope is attenuated under
-consumed-days selection: in a stress test with a strong binary covariate
-(α = 1.0 on the logit consumption scale), the amount slope was recovered as
-≈0.40 vs a true 0.5 (~20%), inflating that covariate subgroup's lower-tail
-percentiles by up to ~17%. The *overall* (marginal) distribution is essentially
-unaffected (≤3% central) because slope biases cancel across the balanced
-covariate. Freeing the full fixed-effect vectors removes the residual slope
-bias (slope → ≈0.475) but adds optimiser dimensions and is not currently
-implemented; for covariate contrasts in episodic foods where consumption is
-strongly covariate-driven, interpret correlated-model subgroup tails with this
-caveat.
-
-
 ## SAS Macro Parity
 
-| SAS Macro Feature | R Implementation | Status |
+| SAS macro feature | R implementation | Status |
 |---|---|---|
-| MIXTRAN amount-only model | `nlme::lme` | Full |
-| MIXTRAN uncorrelated two-part | `glmmPQL`/`glmer` + `lme` | Approximate (PQL) / Full (glmer) |
-| MIXTRAN correlated two-part | Profile-ρ or GHQ | Approximate / Full (GHQ, intercept-bias-corrected) |
-| MIXTRAN Box-Cox lambda search | Profile likelihood grid | Full |
-| DISTRIB Monte Carlo simulation | Vectorized R | Full |
-| DISTRIB weighted percentiles/means | Custom weighted quantile | Full |
-| INDIVINT BLUP predictions | Empirical Bayes from lme/glmer | Full |
-| BRR standard errors | Parallel replicate pipeline | Full |
-| NHANES BRR weight generation | `survey` package wrapper | Full |
-| Multi-cycle weight pooling | `combine_nhanes_cycles()` | Full |
-| Bivariate usual intake | `distrib_bivariate()` | Implemented |
+| MIXTRAN amount-only model (NLMIXED, REPLICATE weights, λ estimated) | `mixtran(model_type = "amount")` | Matches Example 1 |
+| MIXTRAN uncorrelated two-part (`nocorr`) | `mixtran(model_type = "uncorr")` | Matches Example 2 nocorr stage |
+| MIXTRAN correlated two-part (`corr`) | `mixtran(model_type = "corr")` | Matches Example 2 (see Validation) |
+| `covars_prob` / `covars_amt`, `seq`, `weekend`, `subgroup` | `covariates_prob`, `covariates`, `include_seq`, `weekend_var`, `subgroup_var` | Implemented |
+| `vargroup` (separate residual variance by group) | not implemented | Gap |
+| `start_val1-3` | `start` | Implemented |
+| DISTRIB Monte Carlo, 9-point back-transform, min-amount floor | `distrib()` | Matches Examples 1–2 |
+| DISTRIB `wkend_prop`, subgroups, cutpoints, percentiles | `distrib()` | Implemented |
+| DISTRIB `recamt` (proportion meeting a per-person recommendation) | not implemented | Gap |
+| INDIVINT (adaptive-quadrature conditional expectation, `lamt`) | `indivint()` | Verified numerically |
+| BRR with Fay's modification | `brr_usual_intake()` | Implemented |
+| NCI multivariate (bivariate/ratio) macros | `distrib_bivariate()` | Approximation, not a port |
 
 ## Changelog
+
+### v0.5.0 (2026-10-14)
+
+**SAS parity rewrite.** An audit against the NCI v2.1 macro source and NCI's published example output found material differences; see [`docs/AUDIT_2026-10.md`](docs/AUDIT_2026-10.md). Results from earlier versions are not comparable to SAS: DISTRIB means were about 10% low and lower-tail percentiles 25–40% low in Example 1.
+
+- **MIXTRAN**: new weighted maximum-likelihood engine mirroring PROC NLMIXED. It applies subject-level `REPLICATE` weights, estimates the Box-Cox λ in the likelihood, fits the uncorrelated parts separately and the correlated model jointly, and supports separate probability/amount covariates (`covariates_prob`). This replaces `nlme::lme` with `varFixed` weights (which mis-scaled σ²_w and failed with NHANES-scale weights), PQL/glmer, profile-ρ and the non-adaptive GHQ engine. `prob_engine`, `corr_engine` and `ghq_n_nodes` are deprecated and ignored. `nlme` and `MASS` are no longer dependencies.
+- **DISTRIB**: integrates the back-transformation over within-person error (9-point rule) and floors amounts at half the minimum amount. It averages weekday/weekend intake (`wkend_prop`, default 3/7), predicts the amount part from each never-consumer's own covariates, and uses the PC-macro percentile and cutpoint interpolation. It also handles factor subgroups, accepts `subgroup_data`, and no longer changes the caller's RNG state.
+- **INDIVINT**: returns the conditional expectation `E[T | recalls]` by adaptive quadrature, including correlation, within-person error and the `lamt` option. The meaningless two-part `predicted_usual` column (a logit × Box-Cox product) is gone; `predicted_usual` is now an alias of `indusint`.
+- **BRR**: the full-sample run uses the base weight (previously unweighted while replicates were weighted, inflating SEs). Replicates warm-start from the full-sample fit, and statistics are aligned by name.
+- `combine_nhanes_cycles()` gains `cycle_years` for cycles of unequal length.
+- `gh_nodes_adaptive()` weights now include the prior/standard-normal density ratio. The 7-point Gauss–Hermite node table is corrected.
+- Data sufficiency follows MIXTRAN: stop when fewer than 2 subjects have repeat (positive) recalls, warn for 2–10. `skip_if_empty = FALSE` now errors instead of returning NULL.
+- Tests: new SAS-example parity tests, brute-force likelihood/INDIVINT checks, and a `glmer` cross-check. Ground-truth fixtures are regenerated with the NCI definition of usual intake.
 
 ### v0.4.1 (2026-06-15)
 

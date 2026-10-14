@@ -33,8 +33,7 @@ jobs:
       - name: Install package dependencies
         run: |
           install.packages(c(
-            "nlme", "MASS", "survey",
-            "testthat", "lme4", "Rcpp"
+            "survey", "testthat", "lme4", "haven"
           ), repos = "https://cloud.r-project.org")
         shell: Rscript {0}
 
@@ -72,10 +71,15 @@ jobs:
           if (nrow(fail_df) > 0) quit(status = 1)
         shell: Rscript {0}
 
-      - name: Run SAS macro validation tests
+      - name: Run NCI SAS example parity tests (downloads NCI example data)
         id: validation-tests
         continue-on-error: true
-        run: Rscript tests/test_validate.R 2>&1 | tee validate-output.log
+        env:
+          NCIUSUAL_SAS_PARITY: "true"
+        run: |
+          Rscript -e 'library(testthat); library(nciusual); r <- as.data.frame(test_file("tests/testthat/test-sas-examples.R", reporter = "summary")); if (sum(r$failed) > 0 || any(r$error) || sum(r$skipped) > 0) quit(status = 1)' 2>&1 | tee validate-output.log
+          test ${PIPESTATUS[0]} -eq 0
+        shell: bash
 
       - name: Upload failure log
         if: always()
