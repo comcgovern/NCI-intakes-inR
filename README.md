@@ -169,7 +169,7 @@ NCI publishes the v2.1 macros, the analytic dataset, and the SAS listing output 
 | | Result |
 |---|---|
 | **Example 1** (added sugars, males 9+, amount model) | λ 0.3939 vs SAS 0.3941; σ²_u 3.514 vs 3.518; σ²_e 4.072 vs 4.077; fixed effects within 0.02; −2 log L equal to SAS's printed value. DISTRIB mean, P1–P99 and all 10 cutpoint proportions, overall and by age group, within about 1–2% (simulation noise). |
-| **Example 2** (total fruit, children 1–8, correlated model) | Uncorrelated stage matches SAS to 3–4 decimals (λ 0.4086 vs 0.4086). Correlated stage: λ 0.4108 vs 0.4109, ρ 0.544 vs 0.556, σ²_u1 3.12 vs 3.00. DISTRIB mean and P5–P99 within about 1%. |
+| **Example 2** (total fruit, children 1–8, correlated model) | Uncorrelated stage matches SAS to 3–4 decimals (λ 0.4086 vs 0.4086). Correlated stage: λ 0.4108 vs 0.4109, ρ 0.544 vs 0.556, σ²_u1 3.12 vs 3.00. DISTRIB mean and P10–P99 within about 1%; P1/P5 2–3% lower, within the simulation error of SAS's single 100-draw run; cutpoint proportions within 0.005. |
 
 Where parameters differ, nciusual's estimates have a *higher* likelihood than SAS's. SAS's NLMIXED stops at a relative-gradient criterion (its reported gradients are non-zero), and the correlated model's likelihood is very flat in the (σ²_u1, ρ) direction. Reproduce with:
 
