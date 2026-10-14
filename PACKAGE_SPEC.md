@@ -1,6 +1,11 @@
 # `nciusual`: R Port of NCI Usual Dietary Intake Estimation
 ## Package Specification v1.0
 
+> **Note (v0.5.0, October 2026).** Several statements in the original
+> specification below conflict with the NCI v2.1 macro source and were
+> corrected in v0.5.0. Where they disagree, the SAS source wins; see
+> `docs/AUDIT_2026-10.md` and the corrected passages marked **[Corrected]**.
+
 ---
 
 ## 1. Purpose
@@ -134,6 +139,8 @@ Given the fitted model parameters, the distribution of usual intake is estimated
 2. Compute weighted distribution statistics as above.
 
 **Key property:** Within-person error ε is NOT drawn in the simulation. This is what makes the estimated distribution narrower than the observed distribution.
+
+**[Corrected]** ε is not *drawn*, but it is *integrated over* in the back-transformation: DISTRIB computes the consumption-day amount as `E_ε[T⁻¹(X'β + u + ε)]` using a 9-point approximation (exact `exp(μ + σ²_e/2)` for λ = 0), floored at half the minimum amount. Usual intake is the expected daily intake, so it is not `T⁻¹(X'β + u)`. With a weekend indicator, DISTRIB averages weekday and weekend usual intake with weights 4/7 and 3/7 (`wkend_prop`).
 
 ### 2.5 Standard Errors via Balanced Repeated Replication (BRR)
 
@@ -318,6 +325,8 @@ sigma2_w <- as.numeric(vc["Residual", "Variance"])
 - BRR replicate weights drive standard error estimation
 
 This is a key design decision: `nlme::lme` does support a `weights` argument (`varFixed`), but NCI's approach is to use BRR rather than pseudo-likelihood weighting for the NLMIXED step. Our implementation should follow the NCI convention: **unweighted model fitting, weighted distribution estimation, BRR for SEs.**
+
+**[Corrected]** MIXTRAN v2.1 *does* weight the likelihood. `replicate_var` is used "in the replicate statement of PROC NLMIXED", which multiplies each subject's marginal log-likelihood by its (integer) weight. Each BRR replicate refits the model with its replicate weight. (`nlme::varFixed` is not equivalent: it rescales the residual variance per observation.) Box-Cox λ is also estimated *inside* the NLMIXED likelihood (`A_LAMBDA`, bounded > 0.01). The TRANSREG grid search (0.05 to 1 by 0.05, with covariates) supplies only its starting value, and v2.1 has no "λ < 0.15 → log" rule. v0.5.0 implements all of this with its own weighted maximum-likelihood engine (`R/nlmixed.R`).
 
 **Prototype validation result:** σ²_b recovered within 5.3%, σ²_w within 1.0% of true values. Mean usual intake within 1.4% of theoretical. Distribution correctly narrower than observed (SD ratio 0.79).
 
@@ -581,7 +590,7 @@ This helper should:
 
 1. **PQL vs. full ML for logistic GLMM.** SAS MIXTRAN uses full ML (PROC NLMIXED with adaptive GH). R's `MASS::glmmPQL` uses penalized quasi-likelihood, which is known to attenuate variance component estimates for binary outcomes, especially with low prevalence. Mitigation: offer `lme4::glmer` as alternative engine.
 
-2. **Survey weight integration in model fitting.** SAS MIXTRAN feeds survey weights to PROC NLMIXED via a replicate statement. The NCI approach is NOT pseudo-ML with weights; it's BRR-based inference. Our implementation should match this: unweighted model fitting, weighted DISTRIB, BRR for SEs. Document clearly that `weight_var` in `mixtran()` affects DISTRIB computations, not the model likelihood.
+2. **Survey weight integration in model fitting.** **[Corrected]** SAS MIXTRAN feeds the weight to PROC NLMIXED via the REPLICATE statement, which weights each subject's log-likelihood. v0.5.0 does the same: `weight_var` enters the likelihood and DISTRIB, and BRR refits per replicate weight.
 
 3. **Balanced Repeated Replication weight generation.** SAS code for generating NHANES BRR weights uses specific Hadamard matrix constructions. The R `survey` package can generate BRR weights from NHANES strata/PSU variables. Provide a helper or document the workflow.
 

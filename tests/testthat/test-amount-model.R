@@ -69,7 +69,9 @@ test_that("amount model returns required fields", {
   expect_true(!is.null(fit$sigma2_w))
   expect_true(!is.null(fit$var_ratio))
   expect_true(!is.null(fit$predicted))
-  expect_true(!is.null(fit$model_fit))
+  expect_true(!is.null(fit$theta))
+  expect_true(is.finite(fit$m2loglik))
+  expect_true(all(c("subject", "weight", "x2b2", "u2") %in% names(fit$predicted)))
   expect_true(!is.null(fit$n_subjects))
   expect_equal(fit$n_subjects, 300L)
 })
@@ -102,7 +104,10 @@ test_that("amount model auto-estimates lambda", {
     verbose     = FALSE
   ))
   expect_true(is.numeric(fit$lambda))
-  expect_true(fit$lambda >= 0 && fit$lambda <= 1)
+  expect_true(fit$lambda_estimated)
+  # MIXTRAN bound A_LAMBDA > 0.01; true lambda is 0.30
+  expect_gte(fit$lambda, 0.01)
+  expect_lt(abs(fit$lambda - 0.30), 0.1)
 })
 
 test_that("zero replacement works for amount model", {
@@ -141,8 +146,8 @@ test_that("all-zero intake returns NULL with warning by default (skip_if_empty =
   )
   expect_null(result)
 
-  # skip_if_empty = FALSE: should also warn and return NULL (prepare_mixtran_data handles it)
-  result2 <- expect_warning(
+  # skip_if_empty = FALSE: stops with an error instead
+  expect_error(
     mixtran(
       data          = dat,
       intake_var    = "sodium_mg",
@@ -153,7 +158,51 @@ test_that("all-zero intake returns NULL with warning by default (skip_if_empty =
       skip_if_empty = FALSE,
       verbose       = FALSE
     ),
-    "No positive intake values"
+    "no positive intake values"
   )
-  expect_null(result2)
+})
+
+test_that("survey weights enter the likelihood and are scale invariant", {
+  dat <- make_amount_data(n_subjects = 400)
+  set.seed(5)
+  w <- stats::runif(400, 1, 3)
+  dat$wt <- w[dat$SEQN]
+  f1 <- mixtran(dat, "sodium_mg", "SEQN", "day", weight_var = "wt",
+                lambda = 0.3, verbose = FALSE)
+  dat$wt_big <- dat$wt * 25000          # NHANES-scale weights
+  f2 <- mixtran(dat, "sodium_mg", "SEQN", "day", weight_var = "wt_big",
+                lambda = 0.3, verbose = FALSE)
+  f0 <- mixtran(dat, "sodium_mg", "SEQN", "day", lambda = 0.3, verbose = FALSE)
+  # multiplying all weights by a constant changes nothing (REPLICATE weights)
+  expect_equal(f1$sigma2_w, f2$sigma2_w, tolerance = 1e-5)
+  expect_equal(f1$beta, f2$beta, tolerance = 1e-5)
+  # weights change the estimates relative to the unweighted fit
+  expect_false(isTRUE(all.equal(f0$beta, f1$beta, tolerance = 1e-8)))
+  # integer frequency weights are equivalent to replicating subjects
+  dat$fw <- c(1L, 2L)[(dat$SEQN %% 2) + 1]
+  fw <- mixtran(dat, "sodium_mg", "SEQN", "day", weight_var = "fw",
+                lambda = 0.3, verbose = FALSE)
+  dup <- dat[dat$fw == 2, ]; dup$SEQN <- dup$SEQN + 1e6
+  fr <- mixtran(rbind(dat, dup), "sodium_mg", "SEQN", "day",
+                lambda = 0.3, verbose = FALSE)
+  expect_equal(fw$sigma2_b, fr$sigma2_b, tolerance = 1e-4)
+  expect_equal(fw$beta, fr$beta, tolerance = 1e-4)
+})
+
+test_that("amount likelihood equals the closed-form multivariate normal density", {
+  dat <- make_amount_data(n_subjects = 60)
+  fit <- mixtran(dat, "sodium_mg", "SEQN", "day", weekend_var = "weekend",
+                 verbose = FALSE)
+  w <- fit$data
+  X <- cbind(1, as.matrix(w[, fit$amt_covs_used]))
+  z <- boxcox_transform(w$intake, fit$lambda)
+  ll <- 0
+  for (s in unique(w$subject)) {
+    i <- w$subject == s
+    V <- diag(fit$sigma2_w, sum(i)) + fit$sigma2_b
+    r <- z[i] - X[i, , drop = FALSE] %*% fit$beta
+    ll <- ll - 0.5 * (sum(i) * log(2 * pi) + log(det(V)) + t(r) %*% solve(V, r)) +
+      (fit$lambda - 1) * sum(log(w$intake[i]))
+  }
+  expect_equal(fit$m2loglik, -2 * as.numeric(ll), tolerance = 1e-8)
 })

@@ -4,11 +4,11 @@
 #' and derived statistics (e.g., the ratio of usual intake of one nutrient to
 #' another, or to total energy).
 #'
-#' The SAS bivariate NCI macros fit a joint mixed model with correlated random
-#' effects across the two dietary components. This implementation estimates the
-#' between-component correlation from the data and propagates it through the
-#' Monte Carlo simulation, giving valid uncertainty quantification for ratio
-#' statistics.
+#' The NCI multivariate SAS macros fit a joint mixed model with correlated
+#' random effects across dietary components. This function is NOT a port of
+#' those macros: it fits each component with [mixtran()], approximates the
+#' between-component correlation from the empirical Bayes estimates, and
+#' propagates it through a DISTRIB-style joint Monte Carlo simulation.
 #'
 #' @name bivariate
 NULL
@@ -41,6 +41,7 @@ NULL
 #'   below/above.
 #' @param ratio_label Label used in output for the derived ratio
 #'   (e.g., `"pct_energy_fat"`). Default `"ratio"`.
+#' @param wkend_prop Weekend weight passed to the DISTRIB-style simulation.
 #' @param fn_ratio Function of (usual_1, usual_2) that defines the derived
 #'   quantity.  Default `function(u1, u2) u1 / u2` (simple ratio). Could also
 #'   be `function(u1, u2) u1 / u2 * 100` for percentage, or
@@ -72,9 +73,9 @@ distrib_bivariate <- function(data,
                                percentiles = c(5, 10, 25, 50, 75, 90, 95),
                                cutpoints   = NULL,
                                ratio_label = "ratio",
-                               fn_ratio    = function(u1, u2) u1 / u2) {
+                               fn_ratio    = function(u1, u2) u1 / u2,
+                               wkend_prop  = 3 / 7) {
 
-  set.seed(seed)
   data <- as.data.frame(data)
 
   # --- Fit each component separately ---
@@ -110,36 +111,28 @@ distrib_bivariate <- function(data,
   cross_rho <- .estimate_cross_rho(fit1, fit2, verbose)
   if (verbose) message(sprintf("  Cross-component RE correlation: %.4f", cross_rho))
 
-  # --- Subject-level data for each component ---
+  # --- Align subjects (intersection, in the same order) ---
   pred1 <- fit1$predicted
   pred2 <- fit2$predicted
-
-  # Remove nuisance effects (NCI convention: seq_num=0, weekend=0)
-  pred1 <- .remove_nuisance_effects_distrib(pred1, fit1)
-  pred2 <- .remove_nuisance_effects_distrib(pred2, fit2)
-
-  subj1 <- get_subject_level_data(pred1, model_type1, fit1)
-  subj2 <- get_subject_level_data(pred2, model_type2, fit2)
-
-  # Align subjects (intersection, in the same order)
-  common_subj <- intersect(subj1$subject, subj2$subject)
-  subj1 <- subj1[match(common_subj, subj1$subject), ]
-  subj2 <- subj2[match(common_subj, subj2$subject), ]
+  common_subj <- intersect(pred1$subject, pred2$subject)
+  pred1 <- pred1[match(common_subj, pred1$subject), , drop = FALSE]
+  pred2 <- pred2[match(common_subj, pred2$subject), , drop = FALSE]
   n_subj <- length(common_subj)
-  weights_use <- subj1$weight  # use component-1 weights (should be identical)
+  weights_use <- pred1$weight  # use component-1 weights (should be identical)
 
   # --- Joint Monte Carlo simulation ---
   if (verbose) message("Running joint Monte Carlo simulation...")
 
-  sim_result <- .simulate_bivariate(
-    subj1      = subj1,
-    subj2      = subj2,
+  sim_result <- .with_seed(seed, .simulate_bivariate(
+    subj1      = pred1,
+    subj2      = pred2,
     fit1       = fit1,
     fit2       = fit2,
     cross_rho  = cross_rho,
     n_sims     = n_sims,
-    fn_ratio   = fn_ratio
-  )
+    fn_ratio   = fn_ratio,
+    wkend_prop = wkend_prop
+  ))
 
   # --- Compute distribution summaries ---
   wts_expanded <- rep(weights_use, each = n_sims)
@@ -173,10 +166,10 @@ distrib_bivariate <- function(data,
 
 #' Estimate cross-component correlation between random effects
 #'
-#' Uses the empirical Bayes (BLUP) random-effect estimates from both fitted
-#' models and computes their Pearson correlation. For amount-only models the
-#' between-person RE from lme is used. For two-part models, the amount RE
-#' (v2) is used as the primary representative of "usual level" variation.
+#' Uses the empirical Bayes estimates of the amount random effects from both
+#' fitted models and computes their Pearson correlation. This is an
+#' approximation: EBEs are shrunken, and the NCI multivariate macros instead
+#' estimate the cross-component correlation within a joint model.
 #'
 #' @keywords internal
 .estimate_cross_rho <- function(fit1, fit2, verbose = FALSE) {
@@ -198,18 +191,10 @@ distrib_bivariate <- function(data,
 }
 
 
-#' Extract primary random effect vector (named by subject ID as character)
+#' Extract the amount random-effect EBEs (named by subject ID as character)
 #' @keywords internal
 .extract_re <- function(fit) {
-  if (fit$model_type == "amount") {
-    # nlme lme fit
-    re_df <- nlme::ranef(fit$model_fit)
-    stats::setNames(as.numeric(re_df[[1]]), rownames(re_df))
-  } else {
-    # Two-part: use amount RE (v2)
-    re_df <- nlme::ranef(fit$amt_fit)
-    stats::setNames(as.numeric(re_df[[1]]), rownames(re_df))
-  }
+  stats::setNames(fit$predicted$u2, as.character(fit$predicted$subject))
 }
 
 
@@ -217,66 +202,28 @@ distrib_bivariate <- function(data,
 #'
 #' @keywords internal
 .simulate_bivariate <- function(subj1, subj2, fit1, fit2,
-                                 cross_rho, n_sims, fn_ratio) {
+                                 cross_rho, n_sims, fn_ratio,
+                                 wkend_prop = 3 / 7) {
 
   n_subj   <- nrow(subj1)
   rho_safe <- min(max(cross_rho, -0.9999), 0.9999)
-  sqrt_1r2 <- sqrt(1 - rho_safe^2)
 
-  # Simulate correlated standard normals
-  z1_mat <- matrix(stats::rnorm(n_subj * n_sims), n_subj, n_sims)
-  z2_mat <- matrix(stats::rnorm(n_subj * n_sims), n_subj, n_sims)
-  # Make z2 correlated with z1 via cross_rho
-  z2_mat <- rho_safe * z1_mat + sqrt_1r2 * z2_mat
+  # Standardised amount random effects of the two components, correlated
+  # through cross_rho; each component's probability random effect is then
+  # correlated with its own amount random effect (DISTRIB-style draws).
+  w1 <- matrix(stats::rnorm(n_subj * n_sims), n_subj, n_sims)
+  w2 <- rho_safe * w1 +
+    sqrt(1 - rho_safe^2) * matrix(stats::rnorm(n_subj * n_sims), n_subj, n_sims)
+  e1 <- matrix(stats::rnorm(n_subj * n_sims), n_subj, n_sims)
+  e2 <- matrix(stats::rnorm(n_subj * n_sims), n_subj, n_sims)
 
-  # Component 1 usual intake
-  ui1 <- .simulate_one_component(subj1, fit1, z1_mat, n_sims)
+  ui1 <- as.vector(t(.simulate_usual(subj1, fit1, e1, w1, wkend_prop)$t))
+  ui2 <- as.vector(t(.simulate_usual(subj2, fit2, e2, w2, wkend_prop)$t))
 
-  # Component 2 usual intake (correlated draws)
-  ui2 <- .simulate_one_component(subj2, fit2, z2_mat, n_sims)
-
-  # Derived quantity (ratio or other function)
   ratio <- fn_ratio(ui1, ui2)
   ratio[!is.finite(ratio)] <- NA_real_
 
   list(ui1 = ui1, ui2 = ui2, ratio = ratio)
-}
-
-
-#' Simulate one component using pre-drawn correlated standard-normal matrix
-#'
-#' @keywords internal
-.simulate_one_component <- function(subj_df, fit, z_std_mat, n_sims) {
-
-  model_type <- fit$model_type
-  lambda     <- fit$lambda
-
-  if (model_type == "amount") {
-    sd_b   <- sqrt(fit$sigma2_b)
-    u_mat  <- sd_b * z_std_mat
-    t_mat  <- subj_df$linpred + u_mat
-    ui_mat <- pmax(boxcox_inverse(t_mat, lambda), 0)
-
-  } else {
-    # Two-part: use v2 (amount RE) driven by z_std_mat; v1 drawn independently
-    sd_v1  <- sqrt(fit$sigma2_v1)
-    sd_v2  <- sqrt(fit$sigma2_v2)
-
-    # Independent v1 for each subject's consumption probability
-    z_v1   <- matrix(stats::rnorm(nrow(subj_df) * n_sims),
-                     nrow(subj_df), n_sims)
-    v1_mat <- sd_v1 * z_v1
-
-    # v2 driven by correlated z_std_mat
-    v2_mat <- sd_v2 * z_std_mat
-
-    eta_mat  <- subj_df$prob_linpred + v1_mat
-    prob_mat <- 1 / (1 + exp(-eta_mat))
-    amt_mat  <- pmax(boxcox_inverse(subj_df$amt_linpred + v2_mat, lambda), 0)
-    ui_mat   <- prob_mat * amt_mat
-  }
-
-  as.vector(t(ui_mat))  # row-major: subject i at positions (i-1)*n_sims+1 : i*n_sims
 }
 
 

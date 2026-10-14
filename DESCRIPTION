@@ -1,32 +1,32 @@
 Package: nciusual
 Title: NCI Method for Estimating Usual Dietary Intake Distributions
-Version: 0.4.1
+Version: 0.5.0
 Authors@R: person("Conor", "McGovern", email = "comcgovern@example.com",
     role = c("aut", "cre"))
 Description: R port of the National Cancer Institute (NCI) MIXTRAN, DISTRIB,
-    and INDIVINT SAS macros for estimating usual dietary intake distributions
-    from 24-hour dietary recall data. Supports amount-only models (for
-    ubiquitously consumed nutrients) and two-part correlated/uncorrelated models
-    (for episodically consumed foods). Offers a choice of probability sub-model
-    engine (MASS::glmmPQL or lme4::glmer) and correlated-model engine (profile
-    likelihood over rho or Gauss-Hermite quadrature) for the two-part model.
-    Includes individual BLUP predictions via indivint(), bivariate usual intake
-    and ratio estimation via distrib_bivariate(), helpers for NHANES multi-cycle
-    survey weight pooling, and adaptive Gauss-Hermite quadrature utilities.
-    Designed for use with NHANES data and complex survey designs.
+    and INDIVINT SAS macros (v2.1) for estimating usual dietary intake
+    distributions from 24-hour dietary recall data. Fits amount-only models
+    (for ubiquitously consumed nutrients) and uncorrelated/correlated two-part
+    models (for episodically consumed foods) by survey-weighted maximum
+    likelihood with the Box-Cox parameter estimated, as MIXTRAN does with PROC
+    NLMIXED; simulates usual intake as DISTRIB does (9-point back-transformation
+    over within-person error, weekday/weekend averaging); and predicts
+    individual usual intake as INDIVINT does (conditional expectation by
+    adaptive Gauss-Hermite quadrature). Also provides BRR standard errors,
+    NHANES multi-cycle weight pooling, an approximate bivariate extension, and
+    Gauss-Hermite quadrature utilities.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.0
 Imports:
-    nlme,
     stats,
-    MASS,
-    survey,
-    utils
+    utils,
+    graphics,
+    grDevices
 Suggests:
     testthat (>= 3.0.0),
     lme4,
+    survey,
     future.apply,
-    nhanesA,
     haven

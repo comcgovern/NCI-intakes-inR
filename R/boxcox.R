@@ -38,21 +38,26 @@ boxcox_inverse <- function(z, lambda) {
 
 #' Find optimal Box-Cox lambda via profile likelihood
 #'
-#' Searches over a grid of lambda values to find the transformation that
-#' best normalizes the positive consumption-day amounts. Mirrors the
-#' approach used in SAS MIXTRAN, which evaluates lambda on a grid from
-#' 0.01 to 1.0 (or uses log if lambda < 0.15).
+#' Searches over a grid of lambda values for the Box-Cox transformation that
+#' maximises the normal profile likelihood of the positive amounts, optionally
+#' after regressing on covariates. This mirrors the PROC TRANSREG step MIXTRAN
+#' uses to obtain a *starting value*; `mixtran()` then estimates lambda by
+#' maximum likelihood within the mixed model.
 #'
 #' @param y Numeric vector of positive consumption-day amounts
 #' @param weights Optional survey weights
 #' @param lambda_grid Grid of lambda values to search
 #' @param covariates Optional model matrix of covariates (for residual normality)
+#' @param use_log_rule If `TRUE` (default, for backward compatibility), a grid
+#'   optimum below 0.15 is replaced by 0 (log). This rule is not part of
+#'   MIXTRAN v2.1; `mixtran()` calls this function with `use_log_rule = FALSE`.
 #' @return List with optimal lambda, log-likelihoods, and diagnostics
 #' @export
 find_optimal_lambda <- function(y,
                                  weights = NULL,
                                  lambda_grid = seq(0.01, 1.0, by = 0.01),
-                                 covariates = NULL) {
+                                 covariates = NULL,
+                                 use_log_rule = TRUE) {
   y_pos <- y[!is.na(y) & y > 0]
   n <- length(y_pos)
 
@@ -96,9 +101,8 @@ find_optimal_lambda <- function(y,
   best_idx <- which.max(log_liks)
   best_lambda <- lambda_grid[best_idx]
 
-  # NCI convention: if lambda < 0.15, use log transform (lambda = 0)
-  # because the method may not perform well with very small lambda
-  use_log <- best_lambda < 0.15
+  # Optional log rule (not part of MIXTRAN v2.1)
+  use_log <- isTRUE(use_log_rule) && best_lambda < 0.15
 
   list(
     lambda = if (use_log) 0 else best_lambda,

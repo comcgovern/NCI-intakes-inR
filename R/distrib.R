@@ -1,359 +1,254 @@
 #' DISTRIB: Estimate Usual Intake Distributions
 #'
-#' R port of the NCI DISTRIB SAS macro. Uses parameter estimates from
-#' mixtran() and Monte Carlo simulation to estimate the distribution of
-#' usual intake for a population or subpopulation.
-#'
-#' The key insight: observed 24-hour recall data conflates between-person
-#' and within-person variation. DISTRIB removes within-person variation via
-#' simulation, yielding the distribution of *usual* (long-run average) intake.
+#' R port of the NCI DISTRIB SAS macro (v2.1). Uses the parameter estimates
+#' and subject-level predictions from [mixtran()] and Monte Carlo simulation of
+#' the random effects to estimate the distribution of usual intake for a
+#' population or subpopulations.
 #'
 #' @name distrib
 NULL
 
 #' Estimate usual intake distribution (DISTRIB equivalent)
 #'
-#' @param mixtran_obj Output from mixtran()
-#' @param subgroup_var Optional: name of subgroup variable in the predicted data
-#'   for which to compute separate distributions
-#' @param cutpoints Numeric vector of cutpoints for computing % above/below
-#' @param percentiles Percentiles to estimate (default: standard set)
-#' @param n_sims Number of Monte Carlo simulations per person (default: 100)
-#' @param seed Random seed for reproducibility
-#' @return A `distrib_result` object with estimated usual intake distribution
+#' For each subject and each of `n_sims` repetitions, DISTRIB draws the random
+#' effects `(u1, u2)` from their fitted (bivariate) normal distribution and
+#' computes usual intake on the original scale as in the DISTRIB macro:
+#'
+#' * probability of consumption `p = logistic(x1b1 + u1)` (1 for amount-only
+#'   models);
+#' * consumption-day amount `a = E_e[T^-1(x2b2 + u2 + e)]`, the expectation
+#'   over the within-person error `e ~ N(0, var_e)`, computed with DISTRIB's
+#'   9-point approximation (exact `exp(x2b2 + u2 + var_e/2)` when lambda = 0)
+#'   and bounded below by half of the minimum amount;
+#' * usual intake `t = p * a`.
+#'
+#' The sequence effect is removed (first-recall reference). When the model
+#' includes a weekend indicator, `t`, `p` and `a` are computed for a weekday
+#' and a weekend day and averaged with weights `1 - wkend_prop` and
+#' `wkend_prop` (DISTRIB default 4/7 and 3/7). Covariates are kept at each
+#' subject's observed (first-record) values.
+#'
+#' Percentiles and cutpoint proportions use the DISTRIB PC-macro algorithm:
+#' weights are normalised within each group, tied values are pooled,
+#' cumulative proportions are taken at the midpoint of each value's weight,
+#' and values are interpolated (and extrapolated at the ends) linearly.
+#'
+#' @param mixtran_obj Output from [mixtran()].
+#' @param subgroup_var Optional name of a subgroup variable. It must be in
+#'   `mixtran_obj$predicted` (pass `subgroup_var` to `mixtran()`) or in
+#'   `subgroup_data`.
+#' @param cutpoints Numeric vector of cutpoints; the weighted proportion of
+#'   usual intake below (and above) each cutpoint is reported.
+#' @param percentiles Percentiles to estimate (0-100).
+#' @param n_sims Number of Monte Carlo repetitions per subject (`nsim_mc`).
+#' @param seed Random seed for reproducibility. The caller's RNG state is
+#'   restored on exit.
+#' @param wkend_prop Weight given to weekend days when the model includes a
+#'   weekend indicator (DISTRIB `wkend_prop`; default 3/7).
+#' @param subgroup_data Optional data frame with the subject ID column
+#'   (`mixtran_obj$subject_var`) and `subgroup_var`, like DISTRIB's `add_da`.
+#' @return A `distrib_result` object.
 #' @export
 distrib <- function(mixtran_obj,
                     subgroup_var = NULL,
                     cutpoints = NULL,
                     percentiles = c(5, 10, 25, 50, 75, 90, 95),
                     n_sims = 100,
-                    seed = 12345) {
+                    seed = 12345,
+                    wkend_prop = 3 / 7,
+                    subgroup_data = NULL) {
 
   stopifnot(inherits(mixtran_obj, "mixtran_fit"))
-  set.seed(seed)
+  if (!is.numeric(wkend_prop) || wkend_prop <= 0 || wkend_prop >= 1) {
+    stop("'wkend_prop' must be strictly between 0 and 1.")
+  }
+  .with_seed(seed, {
+    pred <- mixtran_obj$predicted
+    if (!is.null(subgroup_var)) {
+      pred <- .attach_subgroup(pred, mixtran_obj, subgroup_var, subgroup_data)
+    }
+    n_subj <- nrow(pred)
+    z1 <- matrix(stats::rnorm(n_subj * n_sims), n_subj, n_sims)
+    z2 <- matrix(stats::rnorm(n_subj * n_sims), n_subj, n_sims)
+    sims <- .simulate_usual(pred, mixtran_obj, z1, z2, wkend_prop)
+  })
 
-  pred <- mixtran_obj$predicted
-  model_type <- mixtran_obj$model_type
-  lambda <- mixtran_obj$lambda
-
-  # --- Remove nuisance covariate effects (NCI convention) ---
-  # DISTRIB estimates usual intake at reference covariate values:
-  # seq_num = 0 (first recall) and weekend = 0 (weekday).
-  # User covariates (demographics) are retained at observed values.
-  pred <- .remove_nuisance_effects_distrib(pred, mixtran_obj)
-
-  # Get unique subjects with their linear predictors and weights
-  subj_df <- get_subject_level_data(pred, model_type, mixtran_obj)
-
-  # Determine subgroups
+  groups <- list(Overall = seq_len(n_subj))
   if (!is.null(subgroup_var)) {
-    if (!(subgroup_var %in% names(pred))) {
-      stop("Subgroup variable '", subgroup_var, "' not found in predicted data.")
-    }
-    # Attach subgroup to subject-level data
-    subj_map <- pred[!duplicated(pred$subject), c("subject", subgroup_var)]
-    subj_df <- merge(subj_df, subj_map, by = "subject")
-    subgroup_levels <- c(unique(subj_df[[subgroup_var]]), "Overall")
-  } else {
-    subgroup_levels <- "Overall"
+    g <- pred[[subgroup_var]]
+    lev <- if (is.factor(g)) levels(droplevels(g)) else sort(unique(g[!is.na(g)]))
+    for (lv in lev) groups[[as.character(lv)]] <- which(!is.na(g) & g == lv)
+    groups <- c(groups[-1], groups[1])   # subgroups first, then Overall
   }
 
-  # --- Monte Carlo simulation ---
-  if (model_type == "amount") {
-    simulated <- simulate_amount_model(
-      subj_df = subj_df,
-      beta = mixtran_obj$beta,
-      sigma2_b = mixtran_obj$sigma2_b,
-      sigma2_w = mixtran_obj$sigma2_w,
-      lambda = lambda,
-      n_sims = n_sims
+  results <- lapply(groups, function(idx) {
+    compute_distribution_summary(
+      as.numeric(t(sims$t[idx, , drop = FALSE])),
+      rep(pred$weight[idx], each = n_sims),
+      percentiles, cutpoints
     )
-  } else {
-    simulated <- simulate_twopart_model(
-      subj_df = subj_df,
-      alpha = mixtran_obj$alpha,
-      beta = mixtran_obj$beta,
-      sigma2_v1 = mixtran_obj$sigma2_v1,
-      sigma2_v2 = mixtran_obj$sigma2_v2,
-      sigma2_e = mixtran_obj$sigma2_e,
-      rho = mixtran_obj$rho,
-      lambda = lambda,
-      n_sims = n_sims
-    )
-  }
-
-  # Compute summaries by subgroup
-  results <- list()
-  for (grp in subgroup_levels) {
-    if (grp == "Overall") {
-      sim_vals <- simulated$usual_intake
-      wts <- rep(subj_df$weight, each = n_sims)
-    } else {
-      grp_idx <- which(subj_df[[subgroup_var]] == grp)
-      sim_idx <- as.vector(outer(seq_len(n_sims), (grp_idx - 1) * n_sims, "+"))
-      sim_vals <- simulated$usual_intake[sim_idx]
-      wts <- rep(subj_df$weight[grp_idx], each = n_sims)
-    }
-
-    results[[grp]] <- compute_distribution_summary(
-      sim_vals, wts, percentiles, cutpoints
-    )
-  }
+  })
 
   output <- list(
     results = results,
-    simulated = simulated,
+    simulated = list(usual_intake = as.vector(t(sims$t)),
+                     prob = as.vector(t(sims$p)),
+                     amount = as.vector(t(sims$a)),
+                     n_subjects = n_subj, n_sims = n_sims),
     mixtran_obj = mixtran_obj,
     n_sims = n_sims,
     seed = seed,
+    wkend_prop = wkend_prop,
     percentiles_requested = percentiles,
     cutpoints = cutpoints,
     subgroup_var = subgroup_var
   )
   class(output) <- "distrib_result"
-  return(output)
+  output
 }
 
 
-#' Remove nuisance covariate effects from predicted linear predictors
-#'
-#' NCI convention: DISTRIB computes usual intake at reference covariate values
-#' (seq_num = 0, weekend = 0). This function subtracts these effects from the
-#' population-level linear predictors so that the Monte Carlo simulation
-#' produces usual intake for a reference ("usual") day.
-#'
-#' @keywords internal
-.remove_nuisance_effects_distrib <- function(pred, mixtran_obj) {
-  model_type <- mixtran_obj$model_type
+# Evaluate `expr` with a given seed and restore the caller's RNG state.
+.with_seed <- function(seed, expr) {
+  old <- if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+    get(".Random.seed", envir = globalenv()) else NULL
+  on.exit({
+    if (is.null(old)) {
+      if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+        rm(".Random.seed", envir = globalenv())
+    } else assign(".Random.seed", old, envir = globalenv())
+  })
+  set.seed(seed)
+  eval.parent(substitute(expr))
+}
 
-  if (model_type == "amount") {
-    beta <- mixtran_obj$beta
-    # Remove seq_num effect
-    if ("seq_num" %in% names(beta) && "seq_num" %in% names(pred)) {
-      pred$linpred <- pred$linpred - beta["seq_num"] * pred$seq_num
-    }
-    # Remove weekend effect
-    if ("weekend" %in% names(beta) && "weekend" %in% names(pred)) {
-      pred$linpred <- pred$linpred - beta["weekend"] * pred$weekend
-    }
-  } else {
-    alpha <- mixtran_obj$alpha
-    beta  <- mixtran_obj$beta
 
-    # Probability sub-model: remove seq_num and weekend from prob_linpred
-    if ("seq_num" %in% names(alpha) && "seq_num" %in% names(pred)) {
-      pred$prob_linpred <- pred$prob_linpred - alpha["seq_num"] * pred$seq_num
-    }
-    if ("weekend" %in% names(alpha) && "weekend" %in% names(pred)) {
-      pred$prob_linpred <- pred$prob_linpred - alpha["weekend"] * pred$weekend
-    }
-
-    # Amount sub-model: remove seq_num and weekend from amt_linpred
-    # (only for consumed rows where amt_linpred is not NA)
-    pos_mask <- !is.na(pred$amt_linpred)
-    if ("seq_num" %in% names(beta) && "seq_num" %in% names(pred)) {
-      pred$amt_linpred[pos_mask] <- pred$amt_linpred[pos_mask] -
-        beta["seq_num"] * pred$seq_num[pos_mask]
-    }
-    if ("weekend" %in% names(beta) && "weekend" %in% names(pred)) {
-      pred$amt_linpred[pos_mask] <- pred$amt_linpred[pos_mask] -
-        beta["weekend"] * pred$weekend[pos_mask]
-    }
+.attach_subgroup <- function(pred, fit, subgroup_var, subgroup_data) {
+  if (subgroup_var %in% names(pred)) return(pred)
+  if (is.null(subgroup_data)) {
+    stop("Subgroup variable '", subgroup_var, "' not found in predicted data. ",
+         "Pass subgroup_var to mixtran() or supply subgroup_data.")
   }
-
+  sid <- fit$subject_var
+  if (!all(c(sid, subgroup_var) %in% names(subgroup_data))) {
+    stop("subgroup_data must contain '", sid, "' and '", subgroup_var, "'.")
+  }
+  sd <- subgroup_data[!duplicated(subgroup_data[[sid]]), , drop = FALSE]
+  pred[[subgroup_var]] <- sd[[subgroup_var]][match(pred$subject, sd[[sid]])]
   pred
 }
 
 
-#' Get subject-level data from predicted dataset
+#' DISTRIB back-transformation of the consumption-day amount
+#'
+#' Expected original-scale amount given the transformed-scale mean `mu`,
+#' integrating over the within-person error `e ~ N(0, var_e)`: exact
+#' (`exp(mu + var_e/2)`) when `lambda = 0`, otherwise DISTRIB's 9-point
+#' approximation. The result is bounded below by `0.5 * min_amt`.
+#'
+#' @param mu Numeric vector or matrix of transformed-scale means.
+#' @param lambda Box-Cox parameter.
+#' @param var_e Within-person variance on the transformed scale.
+#' @param min_amt Minimum amount (see `mixtran_fit$min_amt`).
+#' @return Back-transformed amounts with the same shape as `mu`.
 #' @keywords internal
-get_subject_level_data <- function(pred, model_type, mixtran_obj = NULL) {
-  # For each subject, get one row with their linear predictor(s) and weight.
-  # Nuisance effects (seq_num, weekend) should already be removed by
-  # .remove_nuisance_effects_distrib() before calling this function.
-
-  subjects <- unique(pred$subject)
-
-  if (model_type == "amount") {
-    subj_df <- do.call(rbind, lapply(subjects, function(s) {
-      rows <- pred[pred$subject == s, ]
-      data.frame(
-        subject = s,
-        linpred = mean(rows$linpred),
-        weight = rows$weight[1],
-        stringsAsFactors = FALSE
-      )
-    }))
+backtransform_9pt <- function(mu, lambda, var_e, min_amt) {
+  floor_amt <- 0.5 * min_amt
+  if (abs(lambda) < 1e-10) {
+    out <- exp(mu + var_e / 2)
   } else {
-    # For subjects who never consumed, amt_linpred is all NA. Use the
-    # population-level intercept (beta_0) as a fallback — this is the NCI
-    # convention: never-consumers' amount component is the population mean
-    # on the transformed scale.
-    global_amt_mean <- mean(pred$amt_linpred, na.rm = TRUE)
-    if (is.nan(global_amt_mean)) {
-      warning("All amt_linpred values are NA (no consumers in sample); ",
-              "amount sub-model estimates will be the population intercept only.",
-              call. = FALSE)
+    cj <- c(-2.1, -1.3, -0.8, -0.5, 0, 0.5, 0.8, 1.3, 2.1)
+    wj <- c(0.063345, 0.080255, 0.070458, 0.159698, 0.252489,
+            0.159698, 0.070458, 0.080255, 0.063345)
+    sd_e <- sqrt(var_e)
+    out <- 0
+    for (j in seq_along(cj)) {
+      inner <- (mu + cj[j] * sd_e) * lambda + 1
+      out <- out + wj[j] * pmax(inner, 0)^(1 / lambda)
     }
-
-    subj_df <- do.call(rbind, lapply(subjects, function(s) {
-      rows <- pred[pred$subject == s, ]
-      amt_lp <- mean(rows$amt_linpred, na.rm = TRUE)
-      # NaN means all amt_linpred were NA (never-consumer): use population mean
-      if (is.nan(amt_lp)) amt_lp <- global_amt_mean
-      data.frame(
-        subject = s,
-        prob_linpred = mean(rows$prob_linpred, na.rm = TRUE),
-        amt_linpred = amt_lp,
-        weight = rows$weight[1],
-        stringsAsFactors = FALSE
-      )
-    }))
   }
-  return(subj_df)
+  pmax(out, floor_amt)
 }
 
 
-#' Simulate usual intakes from amount-only model
+#' Simulate usual intake for each subject (DISTRIB macro MC)
 #'
-#' For each person i, simulate n_sims draws of their usual intake:
-#'   T(UI_i^(r)) = X_i'beta + u_i^(r)
-#'   where u_i^(r) ~ N(0, sigma2_b)
-#'   then back-transform: UI_i^(r) = T^{-1}(T(UI_i^(r)))
-#'
-#' Note: Within-person error (epsilon) is NOT added because we want
-#' usual (habitual) intake, not single-day intake.
-#'
-#' Vectorized: all n_subj × n_sims random effects drawn in one call;
-#' the Box-Cox inverse is applied to the full matrix — no per-subject loop.
-#'
+#' @param pred Subject-level predicted data from `mixtran()`.
+#' @param fit A `mixtran_fit`.
+#' @param z1,z2 Independent standard-normal matrices (n_subjects x n_sims);
+#'   `z2` is the standardised amount random effect.
+#' @param wkend_prop Weekend weight.
+#' @return List of n_subjects x n_sims matrices `t` (usual intake), `p`
+#'   (probability), `a` (amount).
 #' @keywords internal
-simulate_amount_model <- function(subj_df, beta, sigma2_b, sigma2_w,
-                                   lambda, n_sims) {
+.simulate_usual <- function(pred, fit, z1, z2, wkend_prop = 3 / 7) {
+  lambda <- fit$lambda
+  if (fit$model_type == "amount") {
+    sd1 <- 0; sd2 <- sqrt(fit$sigma2_b); ve <- fit$sigma2_w; rho <- 0
+  } else {
+    sd1 <- sqrt(fit$sigma2_v1); sd2 <- sqrt(fit$sigma2_v2)
+    ve  <- fit$sigma2_e; rho <- fit$rho
+  }
+  # z2 drives the amount random effect; u1 is correlated with it via rho
+  u2 <- sd2 * z2
+  u1 <- sd1 * (rho * z2 + sqrt(1 - rho^2) * z1)
 
-  n_subj <- nrow(subj_df)
-  sd_b   <- sqrt(sigma2_b)
-
-  # Draw all between-person random effects at once: n_subj × n_sims
-  u_mat <- matrix(stats::rnorm(n_subj * n_sims, mean = 0, sd = sd_b),
-                  nrow = n_subj, ncol = n_sims)
-
-  # Broadcast: linpred[i] is added to row i of u_mat (R recycling is column-major,
-  # so we rely on the fact that linpred[i] is added to u_mat[i, j] for all j)
-  t_usual_mat <- subj_df$linpred + u_mat  # n_subj × n_sims
-
-  # Back-transform and clamp
-  ui_mat <- pmax(boxcox_inverse(t_usual_mat, lambda), 0)
-
-  # Flatten row-major: subject i occupies positions (i-1)*n_sims+1 : i*n_sims
-  usual_intake <- as.vector(t(ui_mat))
-
-  list(
-    usual_intake = usual_intake,
-    n_subjects   = n_subj,
-    n_sims       = n_sims
-  )
-}
-
-
-#' Simulate usual intakes from two-part model
-#'
-#' For each person, simulate correlated random effects and compute:
-#'   P(consume) = logistic(Z'alpha + v1_i)
-#'   Amount|consume = T^{-1}(X'beta + v2_i)
-#'   Usual intake = P(consume) * E[Amount|consume]
-#'
-#' Vectorized: all n_subj × n_sims random effects drawn as matrices;
-#' probability and amount computed via matrix operations — no per-subject loop.
-#'
-#' @keywords internal
-simulate_twopart_model <- function(subj_df, alpha, beta,
-                                    sigma2_v1, sigma2_v2, sigma2_e,
-                                    rho, lambda, n_sims) {
-
-  n_subj    <- nrow(subj_df)
-  sd_v1     <- sqrt(sigma2_v1)
-  sd_v2     <- sqrt(sigma2_v2)
-  rho_safe  <- min(max(rho, -0.9999), 0.9999)
-  sqrt_1r2  <- sqrt(1 - rho_safe^2)
-
-  # Draw independent standard normals: n_subj × n_sims
-  z1_mat <- matrix(stats::rnorm(n_subj * n_sims), nrow = n_subj, ncol = n_sims)
-  z2_mat <- matrix(stats::rnorm(n_subj * n_sims), nrow = n_subj, ncol = n_sims)
-
-  # Correlated random effects via Cholesky (bivariate normal)
-  v1_mat <- sd_v1 * z1_mat
-  v2_mat <- sd_v2 * (rho_safe * z1_mat + sqrt_1r2 * z2_mat)
-
-  # Probability: broadcast prob_linpred[i] across n_sims columns
-  eta_prob_mat <- subj_df$prob_linpred + v1_mat  # n_subj × n_sims
-  prob_mat     <- 1 / (1 + exp(-eta_prob_mat))
-
-  # Amount: broadcast amt_linpred[i] across n_sims columns
-  t_amount_mat <- subj_df$amt_linpred + v2_mat
-  amount_mat   <- pmax(boxcox_inverse(t_amount_mat, lambda), 0)
-
-  # Usual intake = P(consume) * E[amount | consume]
-  ui_mat <- prob_mat * amount_mat
-
-  # Flatten row-major: subject i occupies positions (i-1)*n_sims+1 : i*n_sims
-  usual_intake <- as.vector(t(ui_mat))
-
-  list(
-    usual_intake = usual_intake,
-    n_subjects   = n_subj,
-    n_sims       = n_sims
-  )
+  day <- function(x1, x2) {
+    p <- if (fit$model_type == "amount") 1 else stats::plogis(x1 + u1)
+    a <- backtransform_9pt(x2 + u2, lambda, ve, fit$min_amt)
+    if (length(p) == 1L) p <- matrix(1, nrow(a), ncol(a))
+    list(p = p, a = a, t = p * a)
+  }
+  d0 <- day(pred$x1b1, pred$x2b2)
+  if (!"x2b2_1" %in% names(pred)) return(d0)
+  d1 <- day(pred$x1b1_1, pred$x2b2_1)
+  wd <- 1 - wkend_prop
+  list(t = wd * d0$t + wkend_prop * d1$t,
+       p = wd * d0$p + wkend_prop * d1$p,
+       a = wd * d0$a + wkend_prop * d1$a)
 }
 
 
 #' Compute distribution summary statistics
 #'
-#' Weighted percentiles, mean, and cutpoint proportions from simulated data
+#' Weighted mean, SD, percentiles and cutpoint proportions of simulated usual
+#' intakes, using the DISTRIB PC-macro interpolation.
 #'
 #' @keywords internal
 compute_distribution_summary <- function(sim_vals, weights, percentiles, cutpoints) {
 
-  # Remove NAs
-  valid <- !is.na(sim_vals)
+  valid <- !is.na(sim_vals) & !is.na(weights)
   sim_vals <- sim_vals[valid]
-  weights <- weights[valid]
+  weights  <- weights[valid]
 
-  if (length(sim_vals) == 0L) {
-    warning("No valid simulated values after removing NAs; ",
+  na_cut <- function(prefix) if (is.null(cutpoints)) NULL else
+    stats::setNames(rep(NA_real_, length(cutpoints)), paste0(prefix, cutpoints))
+  if (length(sim_vals) == 0L || sum(weights) <= 0) {
+    warning("No valid simulated values (or zero total weight); ",
             "returning NA for all summary statistics.", call. = FALSE)
-    na_pct <- setNames(rep(NA_real_, length(percentiles)), paste0("p", percentiles))
     return(list(
       mean = NA_real_, sd = NA_real_,
-      percentiles = na_pct,
-      cutpoint_below = if (!is.null(cutpoints)) setNames(rep(NA_real_, length(cutpoints)), paste0("pct_below_", cutpoints)) else NULL,
-      cutpoint_above = if (!is.null(cutpoints)) setNames(rep(NA_real_, length(cutpoints)), paste0("pct_above_", cutpoints)) else NULL,
+      percentiles = stats::setNames(rep(NA_real_, length(percentiles)),
+                                    paste0("p", percentiles)),
+      cutpoint_below = na_cut("pct_below_"),
+      cutpoint_above = na_cut("pct_above_"),
       n_simulated = 0L
     ))
   }
 
-  # Weighted mean
-  wmean <- stats::weighted.mean(sim_vals, weights)
+  wmean <- sum(sim_vals * weights) / sum(weights)
+  wsd   <- sqrt(sum(weights * (sim_vals - wmean)^2) / sum(weights))
 
-  # Weighted percentiles
-  wpercentiles <- weighted_quantiles(sim_vals, weights, percentiles / 100)
+  ec <- .sas_ecdf(sim_vals, weights)
+  wpercentiles <- .sas_percentiles(ec, percentiles / 100)
   names(wpercentiles) <- paste0("p", percentiles)
 
-  # Weighted SD (for reference)
-  wvar <- stats::weighted.mean((sim_vals - wmean)^2, weights)
-  wsd <- sqrt(wvar)
-
-  # Cutpoint proportions
+  cutpoint_below <- cutpoint_above <- NULL
   if (!is.null(cutpoints)) {
-    cutpoint_below <- vapply(cutpoints, function(cp) {
-      stats::weighted.mean(sim_vals < cp, weights)
-    }, numeric(1))
+    cutpoint_below <- .sas_cutprob(ec, cutpoints)
     cutpoint_above <- 1 - cutpoint_below
     names(cutpoint_below) <- paste0("pct_below_", cutpoints)
     names(cutpoint_above) <- paste0("pct_above_", cutpoints)
-  } else {
-    cutpoint_below <- NULL
-    cutpoint_above <- NULL
   }
 
   list(
@@ -367,39 +262,58 @@ compute_distribution_summary <- function(sim_vals, weights, percentiles, cutpoin
 }
 
 
+# Unique sorted values with their mid-weight cumulative proportions
+# (DISTRIB PC macro: wsumplush = wsum + adjwt_ties / 2).
+.sas_ecdf <- function(x, w) {
+  o  <- order(x)
+  x  <- x[o]; w <- w[o] / sum(w)
+  ux <- unique(x)
+  wt <- rowsum(w, match(x, ux), reorder = FALSE)[, 1]
+  list(x = ux, pos = cumsum(wt) - wt / 2)
+}
+
+# Linear interpolation of x at cumulative proportion h, extrapolating along
+# the first/last segment, bounded below by 0 (tpercentile = max(0, ...)).
+.sas_percentiles <- function(ec, probs) {
+  x <- ec$x; pos <- ec$pos; n <- length(x)
+  if (n == 1L) return(rep(max(0, x), length(probs)))
+  vapply(probs, function(h) {
+    k <- which(pos >= h)[1]
+    if (is.na(k)) k <- n
+    k <- max(k, 2L)
+    slope <- (pos[k] - pos[k - 1]) / (x[k] - x[k - 1])
+    max(0, x[k - 1] + (h - pos[k - 1]) / slope)
+  }, numeric(1))
+}
+
+# Interpolated cumulative proportion at each cutpoint, clipped to [0, 1].
+.sas_cutprob <- function(ec, cuts) {
+  x <- ec$x; pos <- ec$pos; n <- length(x)
+  if (n == 1L) return(as.numeric(cuts > x))
+  vapply(cuts, function(cp) {
+    k <- which(x >= cp)[1]
+    if (is.na(k)) k <- n
+    k <- max(k, 2L)
+    slope <- (pos[k] - pos[k - 1]) / (x[k] - x[k - 1])
+    min(1, max(0, pos[k - 1] + slope * (cp - x[k - 1])))
+  }, numeric(1))
+}
+
+
 #' Weighted quantiles
 #'
-#' Compute weighted quantiles using linear interpolation
+#' Weighted quantiles using the DISTRIB interpolation (mid-weight cumulative
+#' proportions, linear interpolation). For equal weights and distinct values
+#' this equals `quantile(x, probs, type = 5)` inside the data range.
+#'
 #' @keywords internal
 weighted_quantiles <- function(x, w, probs) {
-  ord <- order(x)
-  x <- x[ord]
-  w <- w[ord]
-
-  # Cumulative normalized weights
-  sw <- sum(w)
-  if (!is.finite(sw) || sw <= 0) {
+  if (!is.finite(sum(w)) || sum(w) <= 0) {
     warning("All survey weights are zero or non-finite; falling back to unweighted quantiles.",
             call. = FALSE)
     w <- rep(1, length(w))
-    sw <- length(w)
   }
-  # Plotting positions use the midpoint (Hazen) convention:
-  # observation k carries cumulative probability (S_k - w_k/2) / S, where
-  # S_k = cumsum(w). For equal weights this reduces to (k - 0.5)/n, so the
-  # interpolated quantiles match base R's quantile() (e.g. median of 1:5 = 3).
-  # The previous right-edge convention (cumsum(w)/sw) biased percentiles low.
-  cw <- (cumsum(w) - w / 2) / sw
-
-  vapply(probs, function(p) {
-    if (p <= cw[1]) return(x[1])
-    if (p >= cw[length(cw)]) return(x[length(x)])
-    idx <- max(which(cw <= p))
-    if (idx >= length(x)) return(x[length(x)])
-    # Linear interpolation
-    frac <- (p - cw[idx]) / (cw[idx + 1] - cw[idx])
-    x[idx] + frac * (x[idx + 1] - x[idx])
-  }, numeric(1))
+  .sas_percentiles(.sas_ecdf(x, w), probs)
 }
 
 
@@ -416,15 +330,15 @@ print.distrib_result <- function(x, ...) {
   for (grp in names(x$results)) {
     r <- x$results[[grp]]
     cat(sprintf("--- %s ---\n", grp))
-    cat(sprintf("  Mean: %.2f  (SD: %.2f)\n", r$mean, r$sd))
+    cat(sprintf("  Mean: %.4f  (SD: %.4f)\n", r$mean, r$sd))
     cat("  Percentiles:\n")
     for (nm in names(r$percentiles)) {
-      cat(sprintf("    %s: %.2f\n", nm, r$percentiles[nm]))
+      cat(sprintf("    %s: %.4f\n", nm, r$percentiles[nm]))
     }
     if (!is.null(r$cutpoint_below)) {
       cat("  Cutpoints (% below):\n")
       for (nm in names(r$cutpoint_below)) {
-        cat(sprintf("    %s: %.1f%%\n", nm, r$cutpoint_below[nm] * 100))
+        cat(sprintf("    %s: %.2f%%\n", nm, r$cutpoint_below[nm] * 100))
       }
     }
     cat("\n")
@@ -441,23 +355,15 @@ print.distrib_result <- function(x, ...) {
 distrib_to_df <- function(distrib_obj) {
   rows <- lapply(names(distrib_obj$results), function(grp) {
     r <- distrib_obj$results[[grp]]
-    row <- data.frame(
-      subgroup = grp,
-      mean = r$mean,
-      sd = r$sd,
-      stringsAsFactors = FALSE
-    )
-    # Add percentiles
-    for (nm in names(r$percentiles)) {
-      row[[nm]] <- r$percentiles[nm]
-    }
-    # Add cutpoints
+    row <- data.frame(subgroup = grp, mean = r$mean, sd = r$sd,
+                      stringsAsFactors = FALSE)
+    for (nm in names(r$percentiles)) row[[nm]] <- r$percentiles[[nm]]
     if (!is.null(r$cutpoint_below)) {
-      for (nm in names(r$cutpoint_below)) {
-        row[[nm]] <- r$cutpoint_below[nm]
-      }
+      for (nm in names(r$cutpoint_below)) row[[nm]] <- r$cutpoint_below[[nm]]
     }
     row
   })
-  do.call(rbind, rows)
+  out <- do.call(rbind, rows)
+  rownames(out) <- NULL
+  out
 }

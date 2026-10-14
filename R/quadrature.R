@@ -29,8 +29,8 @@ NULL
                 0.3936193231522, 0.01995324205905)
   ),
   `7` = list(
-    nodes   = c(-2.6519613568352, -1.6735516287675, -0.8162877718535, 0.0,
-                 0.8162877718535,  1.6735516287675,  2.6519613568352),
+    nodes   = c(-2.6519613568352, -1.6735516287675, -0.8162878828589647, 0.0,
+                 0.8162878828589647,  1.6735516287675,  2.6519613568352),
     weights = c(0.0009717812450, 0.0545155828191, 0.4256072526101,
                 0.8102646175568, 0.4256072526101, 0.0545155828191,
                 0.0009717812450)
@@ -146,11 +146,12 @@ gh_nodes_bivariate <- function(n, rho, sigma_v1, sigma_v2) {
 #' curvature (Laplace-like centering), improving accuracy for subjects
 #' with many observations where the posterior is concentrated.
 #'
-#' For each subject i, the mode (v1*, v2*) of the integrand is found by
-#' Newton steps, then the standard nodes are shifted and scaled:
+#' For each subject i, the mode (v1*, v2*) of the integrand is found
+#' numerically (Nelder-Mead), then the standard nodes are shifted and scaled:
 #'   z_q_adapted = mode + scale * z_q_standard
 #'
-#' This mirrors the adaptive GH used in SAS PROC NLMIXED.
+#' This is the adaptive scheme used by SAS PROC NLMIXED. (`mixtran()` uses
+#' its own vectorised adaptive quadrature internally.)
 #'
 #' @param n Number of quadrature points per dimension.
 #' @param eta_i Numeric vector of probability linear predictors for subject i's recalls.
@@ -161,7 +162,10 @@ gh_nodes_bivariate <- function(n, rho, sigma_v1, sigma_v2) {
 #' @param lambda Box-Cox lambda.
 #' @param max_iter Maximum Newton iterations for mode finding (default 20).
 #' @param tol Convergence tolerance (default 1e-6).
-#' @return Data frame with v1, v2, log_weight columns (adapted nodes).
+#' @return Data frame with v1, v2, log_weight columns (adapted nodes). The
+#'   weights are for expectations under the BVN(0, Sigma) prior, so
+#'   `sum(exp(log_weight) * f(v1, v2))` approximates `E[f(v1, v2)]`, the same
+#'   convention as [gh_nodes_bivariate()].
 #' @export
 gh_nodes_adaptive <- function(n, eta_i, mu_i, consumed_i, t_y_i,
                                sigma_v1, sigma_v2, sigma_e, rho, lambda,
@@ -236,9 +240,14 @@ gh_nodes_adaptive <- function(n, eta_i, mu_i, consumed_i, t_y_i,
   # Shift and scale nodes
   v_nodes <- t(scale_mat %*% t(z_std)) + matrix(mode_v, nrow = nrow(z_std), ncol = 2, byrow = TRUE)
 
-  # Adjusted log-weights: log(w1*w2) + log|scale_mat|
+  # Log-weights for expectations under the BVN(0, Sigma) prior:
+  #   E[f(v)] = integral f(v) phi_Sigma(v) dv
+  #          ~= sum_q w_q |S| phi_Sigma(v_q) / phi_2(z_q) f(v_q)
   lw_std  <- log(w[idx1]) + log(w[idx2])
-  lw_adj  <- lw_std + log_det_scale
+  log_phi_std   <- -log(2 * pi) - 0.5 * rowSums(z_std^2)
+  log_phi_prior <- -log(2 * pi) - 0.5 * log(det(sigma_mat)) -
+    0.5 * rowSums((v_nodes %*% inv_sigma) * v_nodes)
+  lw_adj  <- lw_std + log_det_scale + log_phi_prior - log_phi_std
 
   data.frame(v1 = v_nodes[, 1], v2 = v_nodes[, 2],
              log_weight = lw_adj, stringsAsFactors = FALSE)
