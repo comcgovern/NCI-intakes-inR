@@ -125,3 +125,65 @@ test_that("distrib() works after a correlated fit", {
   expect_true(is.finite(res$results$Overall$mean))
   expect_true(all(diff(res$results$Overall$percentiles) >= 0))
 })
+
+test_that("analytic gradient matches finite differences of the likelihood", {
+  set.seed(21)
+  n <- 150
+  nr <- sample(1:3, n, replace = TRUE, prob = c(0.3, 0.5, 0.2))
+  dat <- data.frame(id = rep(1:n, nr), day = unlist(lapply(nr, seq_len)))
+  dat$x1 <- rep(rbinom(n, 1, 0.5), nr)
+  dat$wk <- rbinom(nrow(dat), 1, 3 / 7)
+  dat$w  <- rep(runif(n, 0.5, 3), nr)
+  z1 <- rnorm(n); z2 <- 0.6 * z1 + 0.8 * rnorm(n)
+  dat$y <- rbinom(nrow(dat), 1, plogis(0.2 + 0.4 * dat$x1 + rep(1.1 * z1, nr))) *
+    boxcox_inverse(2 + 0.3 * dat$x1 + rep(0.9 * z2, nr) + rnorm(nrow(dat), 0, 0.8), 0.3)
+  dat$y[dat$y > 0] <- pmax(dat$y[dat$y > 0], 0.05)
+  fit <- suppressWarnings(suppressMessages(mixtran(
+    dat, "y", "id", "day", model_type = "uncorr", covariates = "x1",
+    weekend_var = "wk", weight_var = "w", verbose = FALSE)))
+  ns <- asNamespace("nciusual")
+  d  <- ns$.nci_design(fit$data, fit$prob_covs_used, fit$amt_covs_used,
+                       NA_real_, 11L)
+  th <- c(fit$theta, Z_U = 0.4)
+  check <- function(p, part, d) {
+    f  <- function(x) ns$.neg_wll(stats::setNames(x, names(p)), d, part)
+    gn <- ns$.num_grad(f, p)
+    ga <- ns$.neg_wll_grad(p, d, part)$grad
+    expect_equal(unname(ga), gn, tolerance = 1e-6, label = part)
+  }
+  # away from the optimum, so that the gradient is not ~0
+  set.seed(3)
+  p <- th + stats::rnorm(length(th), 0, 0.05)
+  check(p[startsWith(names(p), "A")], "amount", d)
+  check(p[startsWith(names(p), "P")], "prob", d)
+  check(p, "corr", d)
+  # fixed lambda; few quadrature points (the gradient is that of the
+  # quadrature approximation, so it stays exact)
+  d0 <- d; d0$lambda_fixed <- 0.3; d0$n_quad <- 3L
+  check(p[names(p) != "A_LAMBDA"], "corr", d0)
+})
+
+test_that("the optimiser reports progress and warns when it hits its limits", {
+  set.seed(5)
+  n <- 120
+  dat <- data.frame(id = rep(1:n, each = 2), day = rep(1:2, n))
+  v <- rep(rnorm(n), each = 2)
+  dat$y <- rbinom(2 * n, 1, plogis(0.3 + v)) * exp(rnorm(2 * n, 1 + 0.5 * v, 0.6))
+  fit <- suppressMessages(mixtran(dat, "y", "id", "day", model_type = "uncorr",
+                                  include_seq = FALSE, verbose = FALSE))
+  ns <- asNamespace("nciusual")
+  d  <- ns$.nci_design(fit$data, fit$prob_covs_used, fit$amt_covs_used,
+                       NA_real_, 11L, has_prob = TRUE)
+  p0 <- c(fit$theta, Z_U = atanh(0.5))
+  msgs <- character()
+  expect_warning(
+    withCallingHandlers(
+      res <- ns$.nlmixed_optim(p0, d, "corr", verbose = TRUE, progress_every = 0,
+                               control = list(iter.max = 2)),
+      message = function(m) { msgs <<- c(msgs, conditionMessage(m))
+                              invokeRestart("muffleMessage") }),
+    "iteration/evaluation limit")
+  expect_true(any(grepl("corr part: [0-9]+ iterations, .*rho = ", msgs)))
+  expect_true(any(grepl("iterations in [0-9]+ run", msgs)))
+  expect_gt(res$iterations, 0)
+})
