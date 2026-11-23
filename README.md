@@ -183,6 +183,7 @@ SAS's Example 4 (INDIVINT) dataset is distributed in SAS CPORT format, which R c
 ### Other checks
 
 - The marginal likelihoods agree with brute-force numerical integration (amount, probability and correlated models), and the probability part agrees with `lme4::glmer(nAGQ = 25)`.
+- The likelihood is maximised with an analytic gradient: exact for the amount model, and for the two-part models the exact gradient of the adaptive quadrature approximation (including its dependence on each subject's mode and curvature). It agrees with finite differences to about 1e-10. As in MIXTRAN, the correlated fit starts from the uncorrelated estimates and ρ = 0.5.
 - Analytic ground-truth fixtures (`data-raw/generate_reference.R`, `tests/testthat/fixtures/`): datasets simulated from known parameters, with the true usual-intake distribution under the NCI definition. All three model types recover it within 4–7% across P5–P95.
 
 ```r

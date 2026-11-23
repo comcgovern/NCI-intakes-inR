@@ -31,7 +31,8 @@ NULL
 #'   covariates, or 0.4 when there are none. Supply `lambda` to fix it.
 #' * **Two-part models**: the uncorrelated model fits the probability and
 #'   amount parts separately; the correlated model then maximises the joint
-#'   likelihood starting from the uncorrelated estimates, with the random
+#'   likelihood starting from the uncorrelated estimates and rho = 0.5 (as
+#'   MIXTRAN v2.1 does), with the random
 #'   effects integrated out (adaptive Gauss-Hermite quadrature over the
 #'   probability random effect; the amount random effect is integrated in
 #'   closed form).
@@ -416,7 +417,9 @@ fit_nci_model <- function(prep, model_type, lambda = NULL,
   }
 
   if (model_type == "corr") {
-    p_corr <- use_start(c(theta, Z_U = 0))
+    # MIXTRAN v2.1 starts the correlated fit at the uncorrelated estimates
+    # and rho = 0.5 (data cov2: Rho=0.5; Estimate=0.5*(log(1+Rho)-log(1-Rho))).
+    p_corr <- use_start(c(theta, Z_U = atanh(0.5)))
     fit_c  <- .nlmixed_optim(p_corr, d, "corr", verbose)
     theta  <- fit_c$par
     conv   <- fit_c$converged
